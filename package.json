@@ -1,0 +1,31 @@
+{
+  "name": "scrapiq",
+  "version": "1.0.0",
+  "description": "Deterministic scrap value estimation engine",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "simulate": "node simulate.js",
+    "test:core": "node services/coreEngine.test.js",
+    "test:question": "node services/questionEngine.test.js",
+    "test:pricing": "node services/pricingEngine.test.js",
+    "test:orchestrator": "node services/orchestrator.test.js",
+    "test:api": "node server.test.js",
+    "test": "node services/coreEngine.test.js && node services/questionEngine.test.js && node services/pricingEngine.test.js && node services/orchestrator.test.js && node server.test.js"
+  },
+  "keywords": [
+    "scrap",
+    "pricing",
+    "valuation",
+    "deterministic"
+  ],
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@supabase/supabase-js": "^2.105.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "multer": "^2.1.1"
+  }
+}
