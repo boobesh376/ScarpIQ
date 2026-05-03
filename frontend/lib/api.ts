@@ -69,12 +69,12 @@ export interface AnalyzeResponse {
   category?: string;
   categoryData?: Record<string, string>;
   pricing?: Pricing;
-  improvement?: Improvement;           // NEW — value improvement suggestions
+  improvement?: Improvement;
   questionsAsked?: Array<{ type: string; value: string | number }>;
   answeredSoFar?: number;
   error?: string;
   confidenceLevel?: "high" | "medium" | "low";
-  analysis_id?: string;               // NEW — Supabase row ID (if DB enabled)
+  analysis_id?: string;
 }
 
 // ─── History Types ────────────────────────────────────────────────────────────
@@ -111,15 +111,25 @@ export interface FeedbackResponse {
   message: string;
 }
 
-// ─── Existing API Functions ───────────────────────────────────────────────────
+// ─── Auth Headers Helper ──────────────────────────────────────────────────────
+
+function authHeaders(userId?: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (userId) headers["x-user-id"] = userId;
+  return headers;
+}
+
+// ─── API Functions ────────────────────────────────────────────────────────────
 
 export async function analyzeWithImage(
   file: File,
-  description: string
+  description: string,
+  userId?: string
 ): Promise<AnalyzeResponse> {
   const formData = new FormData();
   formData.append("image", file);
   if (description) formData.append("description", description);
+  if (userId) formData.append("user_id", userId);
 
   const res = await fetch(`${API_BASE}/analyze`, {
     method: "POST",
@@ -134,10 +144,13 @@ export async function analyzeWithImage(
   return res.json();
 }
 
-export async function analyze(input: AnalyzeRequest): Promise<AnalyzeResponse> {
+export async function analyze(
+  input: AnalyzeRequest,
+  userId?: string
+): Promise<AnalyzeResponse> {
   const res = await fetch(`${API_BASE}/analyze`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(userId),
     body: JSON.stringify(input),
   });
 
@@ -151,11 +164,12 @@ export async function analyze(input: AnalyzeRequest): Promise<AnalyzeResponse> {
 
 export async function answer(
   sessionId: string,
-  answerData: { type: string; value: string | number }
+  answerData: { type: string; value: string | number },
+  userId?: string
 ): Promise<AnalyzeResponse> {
   const res = await fetch(`${API_BASE}/answer`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(userId),
     body: JSON.stringify({ sessionId, answer: answerData }),
   });
 
@@ -167,15 +181,16 @@ export async function answer(
   return res.json();
 }
 
-// ─── New API Functions ────────────────────────────────────────────────────────
-
 /**
- * Fetch analysis history, sorted by date descending.
+ * Fetch analysis history for a specific user (filtered server-side).
  */
-export async function fetchHistory(): Promise<HistoryResponse> {
+export async function fetchHistory(userId?: string): Promise<HistoryResponse> {
+  const headers: Record<string, string> = {};
+  if (userId) headers["x-user-id"] = userId;
+
   const res = await fetch(`${API_BASE}/history`, {
     method: "GET",
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
 
   if (!res.ok) {
@@ -189,10 +204,13 @@ export async function fetchHistory(): Promise<HistoryResponse> {
 /**
  * Submit accuracy feedback for a completed analysis.
  */
-export async function submitFeedback(payload: FeedbackRequest): Promise<FeedbackResponse> {
+export async function submitFeedback(
+  payload: FeedbackRequest,
+  userId?: string
+): Promise<FeedbackResponse> {
   const res = await fetch(`${API_BASE}/feedback`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(userId),
     body: JSON.stringify(payload),
   });
 

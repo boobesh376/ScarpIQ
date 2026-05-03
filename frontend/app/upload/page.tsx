@@ -1,7 +1,11 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { analyzeWithImage, analyze, answer, submitFeedback, type AnalyzeResponse, type Question } from "../../lib/api";
+import { normalizeAnswer } from "../../lib/normalizer";
+import { supabase } from "../../lib/supabaseClient";
+import type { User } from "@supabase/supabase-js";
 import s from "./upload.module.css";
 
 const MAX_SIZE = 10 * 1024 * 1024;
@@ -14,19 +18,12 @@ const STEPS = [
   { key: "prepare", label: "Preparing estimate…", icon: "💰" },
 ];
 
-// Normalize human-readable labels to backend enum values
-function normalizeAnswer(type: string, value: string | number): string | number {
-  if (typeof value !== "string") return value;
-
-  const v = value.toLowerCase().trim();
-
-  if (type === "subtype") {
-    if (v.includes("insulated")) return "insulated";
-    if (v.includes("bare")) return "bare";
-    if (v.includes("mixed")) return "mixed";
+// ── SESSION_EXPIRED Detection ─────────────────────────────────────────────────
+function isSessionExpired(error: unknown): boolean {
+  if (error instanceof Error) {
+    return error.message.includes("SESSION_EXPIRED");
   }
-
-  return value;
+  return String(error).includes("SESSION_EXPIRED");
 }
 
 // Phase 11: Condition options with labels/emojis — replaces free text
@@ -38,7 +35,7 @@ const CONDITION_OPTIONS = [
   { value: "heavily_damaged", label: "Heavy Damage", emoji: "🔴", desc: "Major damage" },
 ];
 
-type Phase = "input" | "analyzing" | "asking" | "result" | "error";
+type Phase = "input" | "analyzing" | "asking" | "result" | "error" | "session-expired";
 type ConfidenceLevel = "high" | "medium" | "low";
 
 function fmtBytes(b: number) {
@@ -78,6 +75,38 @@ function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
 }
 
 export default function UploadPage() {
+  const router = useRouter();
+
+  // ── Auth state ────────────────────────────────────────────────────────────
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) {
+        router.replace("/login");
+        return;
+      }
+      setUser(session.user);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        router.replace("/login");
+      } else {
+        setUser(session.user);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
   const [phase, setPhase] = useState<Phase>("input");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -100,6 +129,7 @@ export default function UploadPage() {
   const [feedbackSending, setFeedbackSending] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
   const [showFeedbackNote, setShowFeedbackNote] = useState(false);
+  const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const pickFile = useCallback((f: File) => {
     if (!ALLOWED.includes(f.type)) { setError(`Invalid type: ${f.type}`); return; }
@@ -111,6 +141,15 @@ export default function UploadPage() {
 
   useEffect(() => { return () => { if (preview) URL.revokeObjectURL(preview); }; }, [preview]);
 
+  // ── Cleanup restart timeout on unmount ───────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const removeFile = useCallback(() => {
     setFile(null);
     if (preview) URL.revokeObjectURL(preview);
@@ -118,16 +157,44 @@ export default function UploadPage() {
     if (fileRef.current) fileRef.current.value = "";
   }, [preview]);
 
+  // ── Handle SESSION_EXPIRED ───────────────────────────────────────────────
+  function handleSessionExpired() {
+    setPhase("session-expired");
+    setError("Session expired. Restarting...");
+    setSessionId(null);
+    setCurrentQ(null);
+    setAnsVal("");
+    
+    if (restartTimeoutRef.current) {
+      clearTimeout(restartTimeoutRef.current);
+    }
+    
+    restartTimeoutRef.current = setTimeout(() => {
+      reset();
+      restartTimeoutRef.current = null;
+    }, 1000);
+  }
+
   // ── Analyze ──────────────────────────────────────────────────────────────
   async function handleAnalyze() {
     if (!file && !description.trim()) { setError("Please upload an image or enter a description."); return; }
     setError(""); setPhase("analyzing"); setActiveStep(0);
     try {
       const stepsP = (async () => { for (let i = 0; i < STEPS.length; i++) { setActiveStep(i); await new Promise(r => setTimeout(r, 400)); } })();
-      const res = file ? await analyzeWithImage(file, description.trim()) : await analyze({ description: description.trim(), userInputs: {}, imageAnalysis: null });
+      const userId = user?.id;
+      const res = file
+        ? await analyzeWithImage(file, description.trim(), userId)
+        : await analyze({ description: description.trim(), userInputs: {}, imageAnalysis: null }, userId);
       await stepsP;
       handleRes(res);
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Analysis failed"); setPhase("error"); }
+    } catch (e: unknown) {
+      if (isSessionExpired(e)) {
+        handleSessionExpired();
+      } else {
+        setError(e instanceof Error ? e.message : "Analysis failed");
+        setPhase("error");
+      }
+    }
   }
 
   // ── Answer ───────────────────────────────────────────────────────────────
@@ -139,11 +206,17 @@ export default function UploadPage() {
     if (!parsed && typeof parsed === "string") { setError("Please provide an answer."); return; }
     setLoading(true); setError("");
     try {
-      const res = await answer(sessionId, { type: currentQ.type, value: normalizeAnswer(currentQ.type, parsed) });
+      const res = await answer(sessionId, { type: currentQ.type, value: normalizeAnswer(currentQ.type, parsed) }, user?.id);
       setQHistory(h => [...h, { q: currentQ.question, a: String(parsed), type: currentQ.type }]);
       setAnsVal("");
       handleRes(res);
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Something went wrong"); }
+    } catch (e: unknown) {
+      if (isSessionExpired(e)) {
+        handleSessionExpired();
+      } else {
+        setError(e instanceof Error ? e.message : "Something went wrong");
+      }
+    }
     finally { setLoading(false); }
   }
 
@@ -175,9 +248,7 @@ export default function UploadPage() {
       </div>
     );
 
-    // Phase 11: Condition — always use structured button grid, never free text
     if (t === "condition") {
-      // Working/not-working sub-type (electronics)
       if (q.includes("working")) return (
         <div className={s.optionGroup}>
           {[
@@ -193,7 +264,6 @@ export default function UploadPage() {
         </div>
       );
 
-      // General condition — Phase 11 structured buttons
       return (
         <div className={s.conditionGrid}>
           {CONDITION_OPTIONS.map(o => (
@@ -280,7 +350,6 @@ export default function UploadPage() {
       </div>
     );
 
-    // Fallback: text input (should not trigger for condition)
     return (
       <input type="text" className={s.textInput} value={ansVal}
         onChange={e => setAnsVal(e.target.value)}
@@ -291,12 +360,46 @@ export default function UploadPage() {
 
   const needsSubmitBtn = currentQ && (currentQ.type === "weight" || !["condition", "purity", "material", "plasticType", "cleanliness", "partsMissing"].includes(currentQ.type));
 
+  // ── Auth loading guard ────────────────────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" }}>
+        <span style={{ color: "#94a3b8", fontSize: "1rem" }}>Loading…</span>
+      </div>
+    );
+  }
+
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className={s.page}>
       <header className={s.header}>
         <h1 className={s.logo}>ScrapIQ</h1>
         <p className={s.tagline}>Smart scrap valuation assistant</p>
+        {/* Auth bar */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginTop: "0.5rem", justifyContent: "center", flexWrap: "wrap" }}>
+          {user && (
+            <span style={{ color: "var(--text-secondary)", fontSize: "0.8rem" }}>
+              {user.email}
+            </span>
+          )}
+          <a href="/history" style={{ color: "var(--accent)", fontSize: "0.82rem", textDecoration: "none", fontWeight: 500 }}>
+            History →
+          </a>
+          <button
+            onClick={handleLogout}
+            style={{
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "6px",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: "0.8rem",
+              padding: "0.3rem 0.7rem",
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
       </header>
 
       <main className={s.main}>
@@ -403,7 +506,6 @@ export default function UploadPage() {
               </div>
             </div>
 
-            {/* Phase 11: Confidence badge */}
             {result.confidenceLevel && (
               <ConfidenceBadge level={result.confidenceLevel as ConfidenceLevel} />
             )}
@@ -426,17 +528,14 @@ export default function UploadPage() {
               </div>
             </div>
 
-            {/* Phase 11: Rich explanation section */}
             {result.pricing?.richExplanation && (
               <div className={s.section}>
                 <div className={s.sectionLabel}>Why This Price</div>
 
-                {/* Summary */}
                 <div className={s.explainSummary}>
                   💡 {result.pricing.richExplanation.summary}
                 </div>
 
-                {/* Positives */}
                 {result.pricing.richExplanation.positives?.length > 0 && (
                   <div className={s.explainBlock}>
                     <div className={s.explainBlockTitle}>
@@ -451,7 +550,6 @@ export default function UploadPage() {
                   </div>
                 )}
 
-                {/* Negatives */}
                 {result.pricing.richExplanation.negatives?.length > 0 && (
                   <div className={s.explainBlock}>
                     <div className={s.explainBlockTitle}>
@@ -466,7 +564,6 @@ export default function UploadPage() {
                   </div>
                 )}
 
-                {/* Tips */}
                 {result.pricing.richExplanation.tips?.length > 0 && (
                   <div className={s.explainBlock}>
                     <div className={s.explainBlockTitle}>
@@ -518,7 +615,6 @@ export default function UploadPage() {
               </div>
             )}
 
-            {/* Legacy explanation (fallback if richExplanation absent) */}
             {result.pricing?.explanation && !result.pricing?.richExplanation && (
               <div className={s.section}>
                 <div className={s.sectionLabel}>Insights</div>
@@ -532,7 +628,6 @@ export default function UploadPage() {
               </div>
             )}
 
-            {/* Value Improvement Suggestions */}
             {result.improvement && result.improvement.delta > 0 && (
               <div className={s.section}>
                 <div className={s.sectionLabel}>💹 Potential Value Improvement</div>
@@ -620,7 +715,7 @@ export default function UploadPage() {
                                 analysis_id: result?.analysis_id ?? "unknown",
                                 is_accurate: feedbackVote,
                                 note: feedbackNote.trim() || undefined,
-                              });
+                              }, user?.id);
                               setFeedbackSent(true);
                             } catch (err) {
                               setFeedbackError(err instanceof Error ? err.message : "Failed");
@@ -640,7 +735,7 @@ export default function UploadPage() {
                               analysis_id: result?.analysis_id ?? "unknown",
                               is_accurate: feedbackVote,
                               note: feedbackNote.trim() || undefined,
-                            });
+                            }, user?.id);
                             setFeedbackSent(true);
                           } catch (err) {
                             setFeedbackError(err instanceof Error ? err.message : "Failed");
@@ -684,6 +779,18 @@ export default function UploadPage() {
             <div className={s.errorTitle}>Something went wrong</div>
             <div className={s.errorText}>{error}</div>
             <button className={s.primaryBtn} onClick={reset}>Try Again →</button>
+          </section>
+        )}
+
+        {/* SESSION EXPIRED */}
+        {phase === "session-expired" && (
+          <section className={`${s.card} ${s.errorCard}`}>
+            <div className={s.errorIcon}>🔄</div>
+            <div className={s.errorTitle}>Session Expired</div>
+            <div className={s.errorText}>{error}</div>
+            <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginTop: "0.5rem" }}>
+              Your session has expired. The flow is restarting automatically...
+            </p>
           </section>
         )}
       </main>

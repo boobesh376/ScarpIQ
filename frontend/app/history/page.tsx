@@ -1,12 +1,15 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   fetchHistory,
   submitFeedback,
   type AnalysisRecord,
 } from "../../lib/api";
+import { supabase } from "../../lib/supabaseClient";
+import type { User } from "@supabase/supabase-js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -127,65 +130,45 @@ function FeedbackWidget({ analysisId }: FeedbackWidgetProps) {
         >
           👎 Not accurate
         </button>
-
-        {voted !== null && !showNote && (
-          <button
-            onClick={() => sendFeedback(voted)}
-            disabled={sending}
-            style={{
-              padding: "0.3rem 0.9rem",
-              borderRadius: "var(--radius-full)",
-              border: "none",
-              background: "var(--accent)",
-              color: "#fff",
-              cursor: "pointer",
-              fontSize: "0.8rem",
-            }}
-          >
-            {sending ? "Sending…" : "Submit"}
-          </button>
-        )}
       </div>
 
-      {showNote && (
-        <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+      {showNote && voted !== null && (
+        <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
           <input
             type="text"
-            placeholder="Optional note (e.g. actual price paid)"
+            placeholder="Optional note (e.g. actual price)"
             value={note}
             onChange={(e) => setNote(e.target.value)}
             style={{
               flex: 1,
-              padding: "0.35rem 0.7rem",
+              padding: "0.35rem 0.65rem",
               background: "var(--bg-input)",
               border: "1px solid var(--border-default)",
               borderRadius: "var(--radius-sm)",
               color: "var(--text-primary)",
               fontSize: "0.8rem",
             }}
-            onKeyDown={(e) => { if (e.key === "Enter" && voted !== null) sendFeedback(voted); }}
           />
           <button
-            onClick={() => voted !== null && sendFeedback(voted)}
-            disabled={sending || voted === null}
+            onClick={() => sendFeedback(voted!)}
+            disabled={sending}
             style={{
-              padding: "0.35rem 0.9rem",
+              padding: "0.35rem 0.85rem",
               borderRadius: "var(--radius-sm)",
               border: "none",
               background: "var(--accent)",
               color: "#fff",
               cursor: "pointer",
               fontSize: "0.8rem",
-              whiteSpace: "nowrap",
             }}
           >
-            {sending ? "…" : "Send →"}
+            {sending ? "…" : "Send"}
           </button>
         </div>
       )}
 
       {error && (
-        <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.3rem" }}>
+        <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.35rem" }}>
           {error}
         </p>
       )}
@@ -214,7 +197,6 @@ function HistoryRow({ record }: HistoryRowProps) {
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--border-hover)")}
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border-subtle)")}
     >
-      {/* ── Summary row (always visible) ── */}
       <button
         onClick={() => setExpanded((prev) => !prev)}
         style={{
@@ -231,12 +213,10 @@ function HistoryRow({ record }: HistoryRowProps) {
           color: "var(--text-primary)",
         }}
       >
-        {/* Material emoji */}
         <span style={{ fontSize: "1.4rem" }}>
           {materialEmoji(record.material)}
         </span>
 
-        {/* Material + date */}
         <div>
           <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
             {capitalize(record.material)}
@@ -251,7 +231,6 @@ function HistoryRow({ record }: HistoryRowProps) {
           </div>
         </div>
 
-        {/* Price */}
         <div style={{ textAlign: "right" }}>
           <div style={{ fontWeight: 700, fontSize: "1.05rem", color: "var(--success)" }}>
             {record.final_price !== null ? `₹${record.final_price}` : "—"}
@@ -263,7 +242,6 @@ function HistoryRow({ record }: HistoryRowProps) {
           )}
         </div>
 
-        {/* Expand chevron */}
         <span
           style={{
             color: "var(--text-muted)",
@@ -277,7 +255,6 @@ function HistoryRow({ record }: HistoryRowProps) {
         </span>
       </button>
 
-      {/* ── Expanded details ── */}
       {expanded && (
         <div
           style={{
@@ -286,7 +263,6 @@ function HistoryRow({ record }: HistoryRowProps) {
             animation: "fadeInUp 0.2s ease",
           }}
         >
-          {/* Detail grid */}
           <div
             style={{
               display: "grid",
@@ -324,7 +300,6 @@ function HistoryRow({ record }: HistoryRowProps) {
             ))}
           </div>
 
-          {/* Summary */}
           {record.summary && (
             <p
               style={{
@@ -342,7 +317,6 @@ function HistoryRow({ record }: HistoryRowProps) {
             </p>
           )}
 
-          {/* Feedback */}
           <FeedbackWidget analysisId={record.id} />
         </div>
       )}
@@ -353,24 +327,65 @@ function HistoryRow({ record }: HistoryRowProps) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function HistoryPage() {
+  const router = useRouter();
+  const [user, setUser]         = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [records, setRecords]   = useState<AnalysisRecord[]>([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState("");
 
+  // ── Auth guard ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) {
+        router.replace("/login");
+        return;
+      }
+      setUser(session.user);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        router.replace("/login");
+      } else {
+        setUser(session.user);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
   const load = useCallback(async () => {
+    if (!user) return;
     setLoading(true);
     setError("");
     try {
-      const res = await fetchHistory();
+      const res = await fetchHistory(user.id);
       setRecords(res.analyses ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load history");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (user) load();
+  }, [user, load]);
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" }}>
+        <span style={{ color: "#94a3b8" }}>Loading…</span>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -416,36 +431,48 @@ export default function HistoryPage() {
           </h1>
         </div>
 
-        <button
-          onClick={load}
-          disabled={loading}
-          style={{
-            padding: "0.4rem 1rem",
-            borderRadius: "var(--radius-full)",
-            border: "1px solid var(--border-default)",
-            background: "transparent",
-            color: "var(--text-secondary)",
-            cursor: "pointer",
-            fontSize: "0.8rem",
-            transition: "all 0.2s",
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--accent)";
-            (e.currentTarget as HTMLButtonElement).style.color = "var(--accent)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border-default)";
-            (e.currentTarget as HTMLButtonElement).style.color = "var(--text-secondary)";
-          }}
-        >
-          {loading ? "Refreshing…" : "↻ Refresh"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          {user && (
+            <span style={{ color: "var(--text-muted)", fontSize: "0.78rem" }}>
+              {user.email}
+            </span>
+          )}
+          <button
+            onClick={load}
+            disabled={loading}
+            style={{
+              padding: "0.4rem 1rem",
+              borderRadius: "var(--radius-full)",
+              border: "1px solid var(--border-default)",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: "0.8rem",
+              transition: "all 0.2s",
+            }}
+          >
+            {loading ? "Refreshing…" : "↻ Refresh"}
+          </button>
+          <button
+            onClick={handleLogout}
+            style={{
+              padding: "0.4rem 1rem",
+              borderRadius: "var(--radius-full)",
+              border: "1px solid var(--border-default)",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: "0.8rem",
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
       </header>
 
       {/* ── Main content ── */}
       <main style={{ maxWidth: "720px", margin: "0 auto", padding: "2rem 1.25rem" }}>
 
-        {/* Loading skeleton */}
         {loading && (
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {[1, 2, 3].map((i) => (
@@ -463,7 +490,6 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {/* Error state */}
         {!loading && error && (
           <div
             style={{
@@ -486,7 +512,6 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {/* Empty state */}
         {!loading && !error && records.length === 0 && (
           <div style={{ textAlign: "center", padding: "4rem 1rem" }}>
             <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>📭</div>
@@ -515,7 +540,6 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {/* Record list */}
         {!loading && !error && records.length > 0 && (
           <>
             <p style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginBottom: "1rem" }}>

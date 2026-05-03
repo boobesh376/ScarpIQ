@@ -8,9 +8,16 @@
  *   POST /answer   — Answer a question (returns next question or final result)
  *   GET  /session/:id — Check session status
  *   DELETE /session/:id — Discard a session
- *   GET  /history  — Previous analyses
+ *   GET  /history  — Previous analyses (filtered by user_id if provided)
  *   POST /feedback — Submit accuracy feedback
  *   GET  /health   — Health check
+ *
+ * Auth:
+ *   user_id is read from:
+ *     - x-user-id header (JSON requests)
+ *     - user_id form field (multipart/form-data)
+ *   All DB writes attach user_id when present.
+ *   GET /history filters by user_id when present.
  *
  * Protection Layer (middleware/protection.js):
  *   - Session TTL:   10 minutes (expired → SESSION_EXPIRED)
@@ -74,7 +81,7 @@ const ALLOWED_ORIGIN = process.env.FRONTEND_URL || "*";
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
+  res.header("Access-Control-Allow-Headers", "Content-Type, x-user-id");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -95,6 +102,21 @@ function createSessionId() {
 
 startSessionCleanupInterval(sessions);
 
+// ─── Auth Helper ──────────────────────────────────────────────────────────────
+
+/**
+ * Extract user_id from request.
+ * Checks: x-user-id header (JSON/answer), user_id body field (multipart).
+ * Returns null if not present — all auth is optional (graceful degradation).
+ */
+function extractUserId(req) {
+  const fromHeader = req.headers["x-user-id"];
+  if (fromHeader && typeof fromHeader === "string") return fromHeader;
+  const fromBody = req.body?.user_id;
+  if (fromBody && typeof fromBody === "string") return fromBody;
+  return null;
+}
+
 // ─── Safe Wrappers ────────────────────────────────────────────────────────────
 
 /**
@@ -113,10 +135,13 @@ async function safeAnalyzeImage(buffer, opts) {
 /**
  * Persist analysis to DB with a safe fallback.
  * On failure: logs DB_ERROR silently — never surfaces to client.
+ * @param {Object} result   - The result object from resolveState()
+ * @param {string} context  - Route name for logging
+ * @param {string|null} userId - Supabase user UUID (optional)
  */
-async function safeInsertAnalysis(result, context) {
+async function safeInsertAnalysis(result, context, userId) {
   try {
-    const id = await db.insertAnalysis(result);
+    const id = await db.insertAnalysis(result, userId);
     if (id) logEvent("COMPLETION", { details: { savedId: id, context } });
   } catch (err) {
     logEvent("DB_ERROR", { error: err, details: { context } });
@@ -186,6 +211,7 @@ app.post(
 
     try {
       const description = req.body.description || "";
+      const userId      = extractUserId(req);
 
       let userInputs      = req.body.userInputs;
       const hasUserInputs = userInputs !== undefined && userInputs !== null;
@@ -225,6 +251,7 @@ app.post(
           hasImage:       !!imageAnalysis,
           hasDescription: !!description,
           hasUserInputs,
+          userId:         userId ?? "anonymous",
         },
       });
 
@@ -242,13 +269,14 @@ app.post(
       }
 
       if (resolution.done) {
-        safeInsertAnalysis(resolution.result, "POST /analyze");
+        safeInsertAnalysis(resolution.result, "POST /analyze", userId);
         logEvent("COMPLETION", { details: { source: "analyze_direct", durationMs: Date.now() - startedAt } });
         return res.json(resolution.result);
       }
 
       const sessionId = createSessionId();
-      sessions[sessionId] = { state, questionsAsked: [], createdAt: Date.now() };
+      // Store userId in session so /answer can use it
+      sessions[sessionId] = { state, questionsAsked: [], createdAt: Date.now(), userId };
 
       logEvent("ANALYZE_START", {
         sessionId,
@@ -302,6 +330,9 @@ app.post(
         return errorResponse(res, "SESSION_NOT_FOUND");
       }
 
+      // Prefer userId from session (set during /analyze), fallback to header
+      const userId = session.userId ?? extractUserId(req);
+
       logEvent("ANSWER_STEP", {
         sessionId,
         details: {
@@ -325,7 +356,7 @@ app.post(
         resolution.result.questionsAsked = session.questionsAsked;
         delete sessions[sessionId];
 
-        safeInsertAnalysis(resolution.result, "POST /answer");
+        safeInsertAnalysis(resolution.result, "POST /answer", userId);
 
         logEvent("COMPLETION", {
           sessionId,
@@ -396,9 +427,10 @@ app.delete("/session/:id", (req, res) => {
 
 // ─── GET /history ─────────────────────────────────────────────────────────────
 
-app.get("/history", async (_req, res) => {
+app.get("/history", async (req, res) => {
   try {
-    const analyses = await db.fetchAnalyses();
+    const userId  = req.headers["x-user-id"] || null;
+    const analyses = await db.fetchAnalyses(userId);
     return res.json({ analyses });
   } catch (err) {
     logEvent("DB_ERROR", { error: err, details: { route: "GET /history" } });
@@ -411,6 +443,7 @@ app.get("/history", async (_req, res) => {
 app.post("/feedback", async (req, res) => {
   try {
     const { analysis_id, is_accurate, note } = req.body;
+    const userId = extractUserId(req);
 
     if (!analysis_id || typeof analysis_id !== "string") {
       return errorResponse(res, "INVALID_INPUT", "analysis_id is required (string)");
@@ -424,7 +457,7 @@ app.post("/feedback", async (req, res) => {
 
     let feedbackId = null;
     try {
-      feedbackId = await db.insertFeedback({ analysis_id, is_accurate, note });
+      feedbackId = await db.insertFeedback({ analysis_id, is_accurate, note, user_id: userId });
     } catch (err) {
       logEvent("DB_ERROR", { error: err, details: { route: "POST /feedback" } });
       // safe fallback — still respond successfully
@@ -483,6 +516,10 @@ const server = app.listen(PORT, () => {
   console.log(`       • Session TTL    : 10 minutes`);
   console.log(`       • Rate limit     : 10 req/min per IP`);
   console.log(`       • Sanitization   : strings trimmed + script-stripped`);
+  console.log(`   🔑  Auth layer active:`);
+  console.log(`       • user_id read from x-user-id header or form field`);
+  console.log(`       • DB rows tagged with user_id when present`);
+  console.log(`       • /history filtered by user_id when present`);
   console.log(`   📋  Stability layer active:`);
   console.log(`       • Structured logging via logEvent()`);
   console.log(`       • Standardized errors via errorResponse()`);

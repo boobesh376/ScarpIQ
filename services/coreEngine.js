@@ -181,6 +181,70 @@ function normalizeCondition(input) {
   return CONDITION_NORMALIZATION_MAP[input.toLowerCase().trim()] || null;
 }
 
+/**
+ * Maps human-readable subtype values → canonical backend enums.
+ * Supports multiple phrasings of the same concept.
+ */
+const SUBTYPE_NORMALIZATION_MAP = {
+  // Plastic subtypes
+  "hard plastic": "hard",
+  "hard": "hard",
+  "soft plastic": "soft",
+  "soft": "soft",
+  // Copper subtypes
+  "bare copper": "bare",
+  "bare": "bare",
+  "insulated wire": "insulated",
+  "insulated": "insulated",
+  "mixed metal": "mixed",
+  "mixed": "mixed",
+  // Iron subtypes
+  "heavy iron": "heavy",
+  "heavy": "heavy",
+  "light iron": "light",
+  "light": "light",
+};
+
+/**
+ * Maps human-readable cleanliness values → canonical backend enums.
+ */
+const CLEANLINESS_NORMALIZATION_MAP = {
+  "clean": "clean",
+  "dirty": "dirty",
+  "contaminated": "dirty",
+  "grimy": "dirty",
+  "rusty": "dirty",
+  "soiled": "dirty",
+};
+
+/**
+ * Normalise any subtype string to a valid pricing-engine enum.
+ *
+ * Safe fallback: returns original value if not in map (fails open).
+ *
+ * @param {string} input - Raw subtype string from any source.
+ * @returns {string} Valid subtype enum, or original value if unmapped.
+ */
+function normalizeSubtype(input) {
+  if (!input || typeof input !== "string") return input;
+  const mapped = SUBTYPE_NORMALIZATION_MAP[input.toLowerCase().trim()];
+  return mapped !== undefined ? mapped : input;
+}
+
+/**
+ * Normalise any cleanliness string to a valid pricing-engine enum.
+ *
+ * Safe fallback: returns original value if not in map (fails open).
+ *
+ * @param {string} input - Raw cleanliness string from any source.
+ * @returns {string} Valid cleanliness enum, or original value if unmapped.
+ */
+function normalizeCleanliness(input) {
+  if (!input || typeof input !== "string") return input;
+  const mapped = CLEANLINESS_NORMALIZATION_MAP[input.toLowerCase().trim()];
+  return mapped !== undefined ? mapped : input;
+}
+
 
 
 /**
@@ -493,6 +557,8 @@ module.exports = {
   parseMaterial,
   parseCondition,
   normalizeCondition,
+  normalizeSubtype,
+  normalizeCleanliness,
   resolveField,
   processInput,
   inferMaterial,
@@ -503,4 +569,6 @@ module.exports = {
   CONDITION_MAP,
   VALID_CONDITIONS,
   CONDITION_NORMALIZATION_MAP,
+  SUBTYPE_NORMALIZATION_MAP,
+  CLEANLINESS_NORMALIZATION_MAP,
 };
