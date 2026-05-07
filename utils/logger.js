@@ -43,10 +43,12 @@ class AppError extends Error {
 /**
  * Emit a structured log line to stdout/stderr.
  *
- * @param {"ANALYZE_START"|"ANSWER_STEP"|"COMPLETION"|"ERROR"|"DB_ERROR"|"PRICING_ERROR"|"AI_ERROR"|"SESSION_EXPIRED"|"RATE_LIMITED"|string} type
+ * @param {"ANALYZE_START"|"ANSWER_STEP"|"COMPLETION"|"ERROR"|"DB_ERROR"|"PRICING_ERROR"|"AI_ERROR"|"SESSION_EXPIRED"|"RATE_LIMIT_HIT"|"AUTH_SUCCESS"|"AUTH_FAILED"|string} type
  * @param {{
  *   sessionId?: string,
+ *   userId?: string,
  *   ip?: string,
+ *   route?: string,
  *   details?: *,
  *   error?: Error|string,
  * }} data
@@ -56,6 +58,8 @@ function logEvent(type, data = {}) {
     timestamp: new Date().toISOString(),
     type,
     sessionId: data.sessionId || null,
+    userId: data.userId || null,
+    route: data.route || null,
     details: data.details || null,
   };
 

@@ -4,25 +4,27 @@
  * Exposes the ScrapIQ pipeline via HTTP endpoints.
  *
  * Endpoints:
- *   POST /analyze  — Start analysis (JSON or multipart/form-data with image)
+ *   POST /analyze  — Start analysis (JSON or multipart/form-data with image) [optionally authed]
  *   POST /answer   — Answer a question (returns next question or final result)
  *   GET  /session/:id — Check session status
  *   DELETE /session/:id — Discard a session
- *   GET  /history  — Previous analyses (filtered by user_id if provided)
- *   POST /feedback — Submit accuracy feedback
+ *   GET  /history  — Previous analyses (REQUIRES valid JWT)
+ *   POST /feedback — Submit accuracy feedback (REQUIRES valid JWT)
  *   GET  /health   — Health check
  *
  * Auth:
- *   user_id is read from:
- *     - x-user-id header (JSON requests)
- *     - user_id form field (multipart/form-data)
- *   All DB writes attach user_id when present.
- *   GET /history filters by user_id when present.
+ *   All auth is done via Supabase JWT.
+ *   Frontend must send:  Authorization: Bearer <supabase_access_token>
+ *   x-user-id header is IGNORED — user identity comes only from verified token.
  *
  * Protection Layer (middleware/protection.js):
  *   - Session TTL:   10 minutes (expired → SESSION_EXPIRED)
  *   - Rate limit:    10 req/min per IP (exceeded → 429)
  *   - Sanitization:  trim + strip dangerous chars, validate numerics
+ *
+ * Auth Layer (middleware/authMiddleware.js):
+ *   - requireAuth: enforces valid JWT — returns 401 if missing/invalid
+ *   - optionalAuth: attaches user if token present, continues if not
  *
  * Stability Layer (utils/logger.js):
  *   - Structured logging via logEvent()
@@ -30,6 +32,19 @@
  *   - Safe fallbacks: AI failure → question flow, DB failure → skip, pricing failure → error response
  */
 require('dotenv').config();
+
+// ─── STARTUP ENV VALIDATION ──────────────────────────────────────────────────
+// Critical: Fail fast if core environment variables are missing.
+
+const REQUIRED_ENV_VARS = ["SUPABASE_URL", "SUPABASE_KEY"];
+const missingEnv = REQUIRED_ENV_VARS.filter(key => !process.env[key]);
+
+if (missingEnv.length > 0) {
+  const errorMsg = `FATAL: Missing required environment variables: ${missingEnv.join(", ")}. Server cannot start.`;
+  console.error(`\n❌ ${errorMsg}\n`);
+  process.exit(1);
+}
+
 const express = require("express");
 const crypto  = require("crypto");
 const multer  = require("multer");
@@ -52,6 +67,10 @@ const {
   sanitizeAnswerInput,
   isSessionExpired,
 } = require("./middleware/protection");
+
+// ─── Auth Layer ───────────────────────────────────────────────────────────────
+
+const { requireAuth, optionalAuth } = require("./middleware/authMiddleware");
 
 // ─── Stability Layer ──────────────────────────────────────────────────────────
 
@@ -81,7 +100,8 @@ const ALLOWED_ORIGIN = process.env.FRONTEND_URL || "*";
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, x-user-id");
+  // Authorization header required for JWT; x-user-id removed
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -101,21 +121,6 @@ function createSessionId() {
 }
 
 startSessionCleanupInterval(sessions);
-
-// ─── Auth Helper ──────────────────────────────────────────────────────────────
-
-/**
- * Extract user_id from request.
- * Checks: x-user-id header (JSON/answer), user_id body field (multipart).
- * Returns null if not present — all auth is optional (graceful degradation).
- */
-function extractUserId(req) {
-  const fromHeader = req.headers["x-user-id"];
-  if (fromHeader && typeof fromHeader === "string") return fromHeader;
-  const fromBody = req.body?.user_id;
-  if (fromBody && typeof fromBody === "string") return fromBody;
-  return null;
-}
 
 // ─── Safe Wrappers ────────────────────────────────────────────────────────────
 
@@ -137,7 +142,7 @@ async function safeAnalyzeImage(buffer, opts) {
  * On failure: logs DB_ERROR silently — never surfaces to client.
  * @param {Object} result   - The result object from resolveState()
  * @param {string} context  - Route name for logging
- * @param {string|null} userId - Supabase user UUID (optional)
+ * @param {string|null} userId - Verified Supabase user UUID
  */
 async function safeInsertAnalysis(result, context, userId) {
   try {
@@ -200,10 +205,12 @@ function resolveState(state) {
 }
 
 // ─── POST /analyze ───────────────────────────────────────────────────────────
+// Public route with optional auth — user identity attached if token provided.
 
 app.post(
   "/analyze",
   upload.single("image"),
+  optionalAuth,
   sanitizeAnalyzeInput,
   async (req, res) => {
     pruneExpiredSessions(sessions);
@@ -211,7 +218,8 @@ app.post(
 
     try {
       const description = req.body.description || "";
-      const userId      = extractUserId(req);
+      // Use verified user from JWT only — never trust frontend-supplied user_id
+      const userId = req.user?.id ?? null;
 
       let userInputs      = req.body.userInputs;
       const hasUserInputs = userInputs !== undefined && userInputs !== null;
@@ -275,7 +283,7 @@ app.post(
       }
 
       const sessionId = createSessionId();
-      // Store userId in session so /answer can use it
+      // Store verified userId in session — /answer will use it, never re-read from headers
       sessions[sessionId] = { state, questionsAsked: [], createdAt: Date.now(), userId };
 
       logEvent("ANALYZE_START", {
@@ -300,6 +308,7 @@ app.post(
 );
 
 // ─── POST /answer ────────────────────────────────────────────────────────────
+// Session-bound — userId comes from session only (set during /analyze).
 
 app.post(
   "/answer",
@@ -330,13 +339,14 @@ app.post(
         return errorResponse(res, "SESSION_NOT_FOUND");
       }
 
-      // Prefer userId from session (set during /analyze), fallback to header
-      const userId = session.userId ?? extractUserId(req);
+      // userId is always sourced from the session (which was set from verified JWT during /analyze).
+      // Never read x-user-id or any user identity from this request.
+      const userId = session.userId ?? null;
 
       logEvent("ANSWER_STEP", {
         sessionId,
         details: {
-          answerType:       answer.type,
+          answerType:        answer.type,
           questionsAnswered: session.questionsAsked.length + 1,
         },
       });
@@ -426,10 +436,13 @@ app.delete("/session/:id", (req, res) => {
 });
 
 // ─── GET /history ─────────────────────────────────────────────────────────────
+// PROTECTED — requires valid Supabase JWT.
+// User identity comes exclusively from the verified token (req.user.id).
 
-app.get("/history", async (req, res) => {
+app.get("/history", requireAuth, async (req, res) => {
   try {
-    const userId  = req.headers["x-user-id"] || null;
+    // req.user is guaranteed by requireAuth — no fallback needed
+    const userId   = req.user.id;
     const analyses = await db.fetchAnalyses(userId);
     return res.json({ analyses });
   } catch (err) {
@@ -439,11 +452,14 @@ app.get("/history", async (req, res) => {
 });
 
 // ─── POST /feedback ───────────────────────────────────────────────────────────
+// PROTECTED — requires valid Supabase JWT.
+// User identity comes exclusively from the verified token (req.user.id).
 
-app.post("/feedback", async (req, res) => {
+app.post("/feedback", requireAuth, async (req, res) => {
   try {
     const { analysis_id, is_accurate, note } = req.body;
-    const userId = extractUserId(req);
+    // req.user is guaranteed by requireAuth — never read from headers or body
+    const userId = req.user.id;
 
     if (!analysis_id || typeof analysis_id !== "string") {
       return errorResponse(res, "INVALID_INPUT", "analysis_id is required (string)");
@@ -506,20 +522,20 @@ const PORT = process.env.PORT || 3000;
 
 const server = app.listen(PORT, () => {
   console.log(`\n🚀 ScrapIQ API running on http://localhost:${PORT}`);
-  console.log(`\n   POST /analyze        — Start analysis`);
+  console.log(`\n   POST /analyze        — Start analysis (optional auth)`);
   console.log(`   POST /answer         — Answer a question`);
   console.log(`   GET  /session/:id    — Check session`);
-  console.log(`   GET  /history        — Previous analyses`);
-  console.log(`   POST /feedback       — Submit accuracy feedback`);
+  console.log(`   GET  /history        — Previous analyses 🔒 (JWT required)`);
+  console.log(`   POST /feedback       — Submit accuracy feedback 🔒 (JWT required)`);
   console.log(`   GET  /health         — Health check\n`);
+  console.log(`   🔑  Auth layer active:`);
+  console.log(`       • JWT verified via Supabase on every protected request`);
+  console.log(`       • x-user-id header IGNORED — identity from token only`);
+  console.log(`       • /history and /feedback → 401 without valid Bearer token`);
   console.log(`   🛡  Protection layer active:`);
   console.log(`       • Session TTL    : 10 minutes`);
   console.log(`       • Rate limit     : 10 req/min per IP`);
   console.log(`       • Sanitization   : strings trimmed + script-stripped`);
-  console.log(`   🔑  Auth layer active:`);
-  console.log(`       • user_id read from x-user-id header or form field`);
-  console.log(`       • DB rows tagged with user_id when present`);
-  console.log(`       • /history filtered by user_id when present`);
   console.log(`   📋  Stability layer active:`);
   console.log(`       • Structured logging via logEvent()`);
   console.log(`       • Standardized errors via errorResponse()`);
