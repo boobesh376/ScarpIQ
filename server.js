@@ -377,7 +377,7 @@ app.post(
       });
 
       // Build AI analysis to include in NEEDS_INPUT response
-      const aiAnalysis = buildAiAnalysisSummary(resolution.processed.imageAnalysis);
+      const aiAnalysis = buildAiAnalysisSummary(state.imageAnalysis);
       console.log("[POST /analyze NEEDS_INPUT] aiAnalysis:", aiAnalysis);
 
       return res.json({
@@ -470,7 +470,7 @@ app.post(
       }
 
       // Build AI analysis to include in NEEDS_INPUT response
-      const aiAnalysis = buildAiAnalysisSummary(resolution.processed.imageAnalysis);
+      const aiAnalysis = buildAiAnalysisSummary(session.state.imageAnalysis);
       console.log("[POST /answer NEEDS_INPUT] aiAnalysis:", aiAnalysis);
 
       return res.json({
