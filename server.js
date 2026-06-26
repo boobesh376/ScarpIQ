@@ -377,15 +377,8 @@ app.post(
       });
 
       // Build AI analysis to include in NEEDS_INPUT response
-      console.log("========== DEBUG ==========");
-      console.log("state.imageAnalysis:");
-      console.dir(state.imageAnalysis, { depth: null });
-
-      const aiAnalysis = buildAiAnalysisSummary(state.imageAnalysis);
-
-      console.log("aiAnalysis:");
-      console.dir(aiAnalysis, { depth: null });
-      console.log("===========================");
+      const aiAnalysis = buildAiAnalysisSummary(resolution.processed.imageAnalysis);
+      console.log("[POST /analyze NEEDS_INPUT] aiAnalysis:", aiAnalysis);
 
       return res.json({
         status: "NEEDS_INPUT",
@@ -477,7 +470,7 @@ app.post(
       }
 
       // Build AI analysis to include in NEEDS_INPUT response
-      const aiAnalysis = buildAiAnalysisSummary(session.state.imageAnalysis);
+      const aiAnalysis = buildAiAnalysisSummary(resolution.processed.imageAnalysis);
       console.log("[POST /answer NEEDS_INPUT] aiAnalysis:", aiAnalysis);
 
       return res.json({
