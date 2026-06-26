@@ -385,10 +385,7 @@ app.post(
 
       console.log("aiAnalysis:");
       console.dir(aiAnalysis, { depth: null });
-
       console.log("===========================");
-      const aiAnalysis = buildAiAnalysisSummary(state.imageAnalysis);
-      console.log("[POST /analyze NEEDS_INPUT] aiAnalysis:", aiAnalysis);
 
       return res.json({
         status: "NEEDS_INPUT",
