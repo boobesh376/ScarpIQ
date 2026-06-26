@@ -4,32 +4,52 @@
  * Exposes the ScrapIQ pipeline via HTTP endpoints.
  *
  * Endpoints:
- *   POST /analyze  — Start analysis (JSON or multipart/form-data with image)
+ *   POST /analyze  — Start analysis (JSON or multipart/form-data with image) [optionally authed]
  *   POST /answer   — Answer a question (returns next question or final result)
  *   GET  /session/:id — Check session status
  *   DELETE /session/:id — Discard a session
- *   GET  /history  — Previous analyses (filtered by user_id if provided)
- *   POST /feedback — Submit accuracy feedback
+ *   GET  /history  — Previous analyses (REQUIRES valid JWT)
+ *   POST /feedback — Submit accuracy feedback (REQUIRES valid JWT)
  *   GET  /health   — Health check
  *
  * Auth:
- *   user_id is read from:
- *     - x-user-id header (JSON requests)
- *     - user_id form field (multipart/form-data)
- *   All DB writes attach user_id when present.
- *   GET /history filters by user_id when present.
+ *   All auth is done via Supabase JWT.
+ *   Frontend must send:  Authorization: Bearer <supabase_access_token>
+ *   x-user-id header is IGNORED — user identity comes only from verified token.
  *
  * Protection Layer (middleware/protection.js):
  *   - Session TTL:   10 minutes (expired → SESSION_EXPIRED)
  *   - Rate limit:    10 req/min per IP (exceeded → 429)
  *   - Sanitization:  trim + strip dangerous chars, validate numerics
  *
+ * Auth Layer (middleware/authMiddleware.js):
+ *   - requireAuth: enforces valid JWT — returns 401 if missing/invalid
+ *   - optionalAuth: attaches user if token present, continues if not
+ *
  * Stability Layer (utils/logger.js):
  *   - Structured logging via logEvent()
  *   - Standardized errors via errorResponse() / ERROR_CODES
  *   - Safe fallbacks: AI failure → question flow, DB failure → skip, pricing failure → error response
+ *
+ * AI FIELD POLICY (v2):
+ *   - Material:   AI auto-detects (mandatory, used directly if confident)
+ *   - Condition:  AI estimates only — presented to user for confirmation/edit
+ *   - Weight:     NEVER auto-filled from AI — always requested from user
  */
 require('dotenv').config();
+
+// ─── STARTUP ENV VALIDATION ──────────────────────────────────────────────────
+// Critical: Fail fast if core environment variables are missing.
+
+const REQUIRED_ENV_VARS = ["SUPABASE_URL", "SUPABASE_KEY"];
+const missingEnv = REQUIRED_ENV_VARS.filter(key => !process.env[key]);
+
+if (missingEnv.length > 0) {
+  const errorMsg = `FATAL: Missing required environment variables: ${missingEnv.join(", ")}. Server cannot start.`;
+  console.error(`\n❌ ${errorMsg}\n`);
+  process.exit(1);
+}
+
 const express = require("express");
 const crypto  = require("crypto");
 const multer  = require("multer");
@@ -39,6 +59,8 @@ const { generateNextQuestion, applyUserAnswer,
         detectCategory, extractCategoryData }       = require("./services/questionEngine");
 const { calculatePrice, getImprovementSuggestions } = require("./services/pricingEngine");
 const { analyzeImage }                              = require("./services/imageAnalysis");
+const { calculateValuation }                        = require("./services/valuationService");
+const { mapConfidenceScore }                        = require("./services/confidenceMapper");
 const db                                            = require("./services/db");
 
 // ─── Protection Layer ─────────────────────────────────────────────────────────
@@ -52,6 +74,10 @@ const {
   sanitizeAnswerInput,
   isSessionExpired,
 } = require("./middleware/protection");
+
+// ─── Auth Layer ───────────────────────────────────────────────────────────────
+
+const { requireAuth, optionalAuth } = require("./middleware/authMiddleware");
 
 // ─── Stability Layer ──────────────────────────────────────────────────────────
 
@@ -80,8 +106,9 @@ const upload = multer({
 const ALLOWED_ORIGIN = process.env.FRONTEND_URL || "*";
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, x-user-id");
+  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, PATCH, OPTIONS");
+  // Authorization header required for JWT; x-user-id removed
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -101,21 +128,6 @@ function createSessionId() {
 }
 
 startSessionCleanupInterval(sessions);
-
-// ─── Auth Helper ──────────────────────────────────────────────────────────────
-
-/**
- * Extract user_id from request.
- * Checks: x-user-id header (JSON/answer), user_id body field (multipart).
- * Returns null if not present — all auth is optional (graceful degradation).
- */
-function extractUserId(req) {
-  const fromHeader = req.headers["x-user-id"];
-  if (fromHeader && typeof fromHeader === "string") return fromHeader;
-  const fromBody = req.body?.user_id;
-  if (fromBody && typeof fromBody === "string") return fromBody;
-  return null;
-}
 
 // ─── Safe Wrappers ────────────────────────────────────────────────────────────
 
@@ -137,7 +149,7 @@ async function safeAnalyzeImage(buffer, opts) {
  * On failure: logs DB_ERROR silently — never surfaces to client.
  * @param {Object} result   - The result object from resolveState()
  * @param {string} context  - Route name for logging
- * @param {string|null} userId - Supabase user UUID (optional)
+ * @param {string|null} userId - Verified Supabase user UUID
  */
 async function safeInsertAnalysis(result, context, userId) {
   try {
@@ -167,7 +179,7 @@ function safePricing(params) {
 
 /**
  * Run processInput, check for next question.
- * If complete → run safePricing and return final result.
+ * If complete → run valuationService and return final result.
  * If incomplete → return next question.
  * @throws if pricing fails (caller must catch and return errorResponse)
  */
@@ -181,8 +193,22 @@ function resolveState(state) {
 
   const category     = detectCategory(processed, state.description);
   const categoryData = extractCategoryData(state.userInputs, category);
+  const imageAnalysis = state.imageAnalysis || null;
 
-  const { pricing, improvement } = safePricing({ data: processed.data, category, categoryData });
+  // Use valuationService which cleanly wraps pricingEngine
+  const { pricing, improvement, error: pricingError } = calculateValuation({
+    data:          processed.data,
+    category,
+    categoryData,
+    imageAnalysis, // provides cleanliness fallback
+  });
+
+  if (pricingError || !pricing) {
+    throw new Error(pricingError || "Valuation failed");
+  }
+
+  // Build AI analysis summary for the frontend (explainability layer)
+  const aiAnalysis = buildAiAnalysisSummary(imageAnalysis);
 
   return {
     done: true,
@@ -195,15 +221,53 @@ function resolveState(state) {
       pricing,
       improvement,
       confidenceLevel: processed.confidenceLevel,
+      aiAnalysis,      // reasoning + confidence from Gemini
     },
   };
 }
 
+/**
+ * Build a safe AI analysis summary to include in the final result.
+ * Extracts the explainability fields from imageAnalysis output.
+ * Returns null if no imageAnalysis was available.
+ *
+ * @param {Object|null} imageAnalysis
+ * @returns {Object|null}
+ */
+function buildAiAnalysisSummary(imageAnalysis) {
+  if (!imageAnalysis || imageAnalysis.error || imageAnalysis.source === "mock") {
+    return null;
+  }
+
+  const confidenceInfo = mapConfidenceScore(imageAnalysis.confidenceScore ?? imageAnalysis.confidence);
+
+  return {
+    detectedMaterial:  imageAnalysis.material   || null,
+    detectedCategory:  imageAnalysis.category   || null,
+    detectedCondition: imageAnalysis.condition  || null,
+    cleanliness:       imageAnalysis.cleanliness || null,
+    // estimatedWeightKg is exposed as a SUGGESTION only — never auto-applied to valuation.
+    // The frontend must display it as a hint and require explicit user confirmation.
+    estimatedWeightKg: imageAnalysis.estimatedWeightKg || null,
+    confidence: {
+      level:       confidenceInfo.level,
+      score:       confidenceInfo.score,
+      label:       confidenceInfo.label,
+      description: confidenceInfo.description,
+    },
+    reasoning: Array.isArray(imageAnalysis.reasoning)
+      ? imageAnalysis.reasoning
+      : [],
+  };
+}
+
 // ─── POST /analyze ───────────────────────────────────────────────────────────
+// Public route with optional auth — user identity attached if token provided.
 
 app.post(
   "/analyze",
   upload.single("image"),
+  optionalAuth,
   sanitizeAnalyzeInput,
   async (req, res) => {
     pruneExpiredSessions(sessions);
@@ -211,7 +275,8 @@ app.post(
 
     try {
       const description = req.body.description || "";
-      const userId      = extractUserId(req);
+      // Use verified user from JWT only — never trust frontend-supplied user_id
+      const userId = req.user?.id ?? null;
 
       let userInputs      = req.body.userInputs;
       const hasUserInputs = userInputs !== undefined && userInputs !== null;
@@ -246,12 +311,37 @@ app.post(
         );
       }
 
+      // ── AI Field Pre-fill Policy ────────────────────────────────────────
+      //
+      // MATERIAL:   Auto-detected from AI when confidence is sufficient.
+      //             coreEngine handles this via its priority chain.
+      //
+      // CONDITION:  NOT pre-filled. AI condition estimate is surfaced to the
+      //             frontend via aiAnalysis.detectedCondition as a display hint
+      //             only. The user must always confirm condition — it directly
+      //             affects valuation and AI must not be the final authority.
+      //
+      // WEIGHT:     NEVER pre-filled from AI estimation under any circumstances.
+      //             AI weight is exposed via aiAnalysis.estimatedWeightKg as a
+      //             display hint only. The weight question is always asked.
+      //
+      // CLEANLINESS: NOT pre-filled. The user must always answer the clean/dirty
+      //              question. AI cleanliness was previously pre-filled here which
+      //              caused the cleanliness question to be silently skipped.
+      //              Removed so the question flow always asks the user.
+      //
+      // No AI-to-userInputs pre-filling occurs here for any field.
+
       logEvent("ANALYZE_START", {
         details: {
-          hasImage:       !!imageAnalysis,
-          hasDescription: !!description,
+          hasImage:          !!imageAnalysis,
+          hasDescription:    !!description,
           hasUserInputs,
-          userId:         userId ?? "anonymous",
+          userId:            userId ?? "anonymous",
+          aiMaterial:        imageAnalysis?.material        ?? null,
+          aiConfidenceScore: imageAnalysis?.confidenceScore ?? null,
+          aiCleanliness:     imageAnalysis?.cleanliness     ?? null,
+          aiWeightEstimate:  imageAnalysis?.estimatedWeightKg ?? null,
         },
       });
 
@@ -260,6 +350,9 @@ app.post(
         description:   description || "",
         userInputs:    userInputs || {},
       };
+
+      console.log("[POST /analyze] imageAnalysis material:", imageAnalysis?.material ?? "none");
+      console.log("[POST /analyze] imageAnalysis source:", imageAnalysis?.source ?? "none");
 
       let resolution;
       try {
@@ -275,13 +368,17 @@ app.post(
       }
 
       const sessionId = createSessionId();
-      // Store userId in session so /answer can use it
+      // Store verified userId in session — /answer will use it, never re-read from headers
       sessions[sessionId] = { state, questionsAsked: [], createdAt: Date.now(), userId };
 
       logEvent("ANALYZE_START", {
         sessionId,
         details: { event: "session_created", firstQuestion: resolution.question.type },
       });
+
+      // Build AI analysis to include in NEEDS_INPUT response
+      const aiAnalysis = buildAiAnalysisSummary(resolution.processed.imageAnalysis);
+      console.log("[POST /analyze NEEDS_INPUT] aiAnalysis:", aiAnalysis);
 
       return res.json({
         status: "NEEDS_INPUT",
@@ -291,6 +388,7 @@ app.post(
           question: resolution.question.question,
           category: resolution.question.category,
         },
+        aiAnalysis,  // Include AI detection data for frontend visualization
       });
     } catch (err) {
       logEvent("ERROR", { error: err, details: { route: "POST /analyze" } });
@@ -300,6 +398,7 @@ app.post(
 );
 
 // ─── POST /answer ────────────────────────────────────────────────────────────
+// Session-bound — userId comes from session only (set during /analyze).
 
 app.post(
   "/answer",
@@ -330,13 +429,14 @@ app.post(
         return errorResponse(res, "SESSION_NOT_FOUND");
       }
 
-      // Prefer userId from session (set during /analyze), fallback to header
-      const userId = session.userId ?? extractUserId(req);
+      // userId is always sourced from the session (which was set from verified JWT during /analyze).
+      // Never read x-user-id or any user identity from this request.
+      const userId = session.userId ?? null;
 
       logEvent("ANSWER_STEP", {
         sessionId,
         details: {
-          answerType:       answer.type,
+          answerType:        answer.type,
           questionsAnswered: session.questionsAsked.length + 1,
         },
       });
@@ -369,6 +469,10 @@ app.post(
         return res.json(resolution.result);
       }
 
+      // Build AI analysis to include in NEEDS_INPUT response
+      const aiAnalysis = buildAiAnalysisSummary(resolution.processed.imageAnalysis);
+      console.log("[POST /answer NEEDS_INPUT] aiAnalysis:", aiAnalysis);
+
       return res.json({
         status: "NEEDS_INPUT",
         sessionId,
@@ -378,6 +482,7 @@ app.post(
           category: resolution.question.category,
         },
         answeredSoFar: session.questionsAsked.length,
+        aiAnalysis,  // Include AI detection data for frontend visualization
       });
     } catch (err) {
       logEvent("ERROR", { error: err, details: { route: "POST /answer" } });
@@ -426,10 +531,13 @@ app.delete("/session/:id", (req, res) => {
 });
 
 // ─── GET /history ─────────────────────────────────────────────────────────────
+// PROTECTED — requires valid Supabase JWT.
+// User identity comes exclusively from the verified token (req.user.id).
 
-app.get("/history", async (req, res) => {
+app.get("/history", requireAuth, async (req, res) => {
   try {
-    const userId  = req.headers["x-user-id"] || null;
+    // req.user is guaranteed by requireAuth — no fallback needed
+    const userId   = req.user.id;
     const analyses = await db.fetchAnalyses(userId);
     return res.json({ analyses });
   } catch (err) {
@@ -438,12 +546,68 @@ app.get("/history", async (req, res) => {
   }
 });
 
-// ─── POST /feedback ───────────────────────────────────────────────────────────
+// ─── DELETE /analysis/:id ─────────────────────────────────────────────────────
+// PROTECTED — requires valid Supabase JWT.
+// Only deletes rows owned by the authenticated user.
 
-app.post("/feedback", async (req, res) => {
+app.delete("/analysis/:id", requireAuth, async (req, res) => {
+  try {
+    const userId     = req.user.id;
+    const analysisId = req.params.id;
+
+    if (!analysisId) {
+      return res.status(400).json({ error: "MISSING_ID", message: "Analysis ID is required" });
+    }
+
+    const deleted = await db.deleteAnalysis(analysisId, userId);
+
+    if (!deleted) {
+      return res.status(404).json({ error: "NOT_FOUND", message: "Analysis not found or not owned by user" });
+    }
+
+    return res.json({ success: true, message: "Analysis deleted" });
+  } catch (err) {
+    logEvent("DB_ERROR", { error: err, details: { route: "DELETE /analysis/:id" } });
+    return errorResponse(res, "DB_ERROR");
+  }
+});
+
+// ─── PATCH /analysis/:id/pin ──────────────────────────────────────────────────
+// PROTECTED — requires valid Supabase JWT.
+// Requires: ALTER TABLE analyses ADD COLUMN IF NOT EXISTS is_pinned boolean DEFAULT false;
+
+app.patch("/analysis/:id/pin", requireAuth, async (req, res) => {
+  try {
+    const userId     = req.user.id;
+    const analysisId = req.params.id;
+    const isPinned   = Boolean(req.body?.is_pinned);
+
+    if (!analysisId) {
+      return res.status(400).json({ error: "MISSING_ID", message: "Analysis ID is required" });
+    }
+
+    const ok = await db.togglePinAnalysis(analysisId, userId, isPinned);
+
+    if (!ok) {
+      return res.status(404).json({ error: "NOT_FOUND", message: "Analysis not found or update failed" });
+    }
+
+    return res.json({ success: true, is_pinned: isPinned });
+  } catch (err) {
+    logEvent("DB_ERROR", { error: err, details: { route: "PATCH /analysis/:id/pin" } });
+    return errorResponse(res, "DB_ERROR");
+  }
+});
+
+// ─── POST /feedback ───────────────────────────────────────────────────────────
+// PROTECTED — requires valid Supabase JWT.
+// User identity comes exclusively from the verified token (req.user.id).
+
+app.post("/feedback", requireAuth, async (req, res) => {
   try {
     const { analysis_id, is_accurate, note } = req.body;
-    const userId = extractUserId(req);
+    // req.user is guaranteed by requireAuth — never read from headers or body
+    const userId = req.user.id;
 
     if (!analysis_id || typeof analysis_id !== "string") {
       return errorResponse(res, "INVALID_INPUT", "analysis_id is required (string)");
@@ -472,6 +636,141 @@ app.post("/feedback", async (req, res) => {
     });
   } catch (err) {
     logEvent("ERROR", { error: err, details: { route: "POST /feedback" } });
+    return errorResponse(res, "INTERNAL_ERROR");
+  }
+});
+
+// ─── Market Data Endpoints ───────────────────────────────────────────────────
+
+const { getEnrichedMarketData, getAllPrices, getCacheStats } = require("./services/marketData");
+
+/**
+ * GET /api/market/prices
+ * Returns enriched market data with prices, trends, and insights
+ * Query params:
+ *   ?materials=copper,aluminum,steel (optional, defaults to all)
+ */
+app.get("/api/market/prices", async (req, res) => {
+  try {
+    // Allow optional material filtering
+    const requestedMaterials = req.query.materials
+      ? req.query.materials.split(",").map(m => m.trim().toLowerCase())
+      : ["copper", "aluminum", "steel"];
+
+    const enrichedData = await getEnrichedMarketData(requestedMaterials);
+
+    res.json({
+      success: true,
+      data: enrichedData,
+      timestamp: Date.now(),
+      cacheStats: getCacheStats(),
+    });
+
+    logEvent("MARKET_DATA_SERVED", {
+      details: { materials: requestedMaterials.length },
+    });
+  } catch (err) {
+    logEvent("ERROR", {
+      error: err,
+      details: { route: "GET /api/market/prices" },
+    });
+    return errorResponse(res, "INTERNAL_ERROR");
+  }
+});
+
+/**
+ * GET /market-prices
+ * Alias for /api/market/prices (for frontend compatibility)
+ */
+app.get("/market-prices", async (req, res) => {
+  try {
+    const requestedMaterials = req.query.materials
+      ? req.query.materials.split(",").map(m => m.trim().toLowerCase())
+      : ["copper", "aluminum", "steel"];
+
+    const enrichedData = await getEnrichedMarketData(requestedMaterials);
+
+    res.json({
+      success: true,
+      data: {
+        materials: enrichedData,
+      },
+      timestamp: Date.now(),
+      cacheStats: getCacheStats(),
+    });
+
+    logEvent("MARKET_DATA_SERVED", {
+      details: { materials: requestedMaterials.length, route: "GET /market-prices" },
+    });
+  } catch (err) {
+    logEvent("ERROR", {
+      error: err,
+      details: { route: "GET /market-prices" },
+    });
+    return errorResponse(res, "INTERNAL_ERROR");
+  }
+});
+
+/**
+ * GET /api/market/price/:material
+ * Returns price data for a single material
+ * Example: /api/market/price/copper
+ */
+app.get("/api/market/price/:material", async (req, res) => {
+  try {
+    const { material } = req.params;
+
+    if (!material || material.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Material parameter required",
+      });
+    }
+
+    const enrichedData = await getEnrichedMarketData([material.toLowerCase()]);
+    const priceData = enrichedData[material.toLowerCase()];
+
+    if (!priceData) {
+      return res.status(404).json({
+        success: false,
+        error: `Material not found: ${material}`,
+      });
+    }
+
+    res.json({
+      success: true,
+      data: priceData,
+      timestamp: Date.now(),
+    });
+
+    logEvent("MARKET_DATA_SINGLE", {
+      details: { material: material.toLowerCase() },
+    });
+  } catch (err) {
+    logEvent("ERROR", {
+      error: err,
+      details: { route: "GET /api/market/price/:material" },
+    });
+    return errorResponse(res, "INTERNAL_ERROR");
+  }
+});
+
+/**
+ * GET /api/market/cache-stats
+ * Returns cache statistics (for debugging/monitoring)
+ */
+app.get("/api/market/cache-stats", (_req, res) => {
+  try {
+    const stats = getCacheStats();
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (err) {
+    logEvent("ERROR", {
+      error: err,
+      details: { route: "GET /api/market/cache-stats" },
+    });
     return errorResponse(res, "INTERNAL_ERROR");
   }
 });
@@ -506,24 +805,35 @@ const PORT = process.env.PORT || 3000;
 
 const server = app.listen(PORT, () => {
   console.log(`\n🚀 ScrapIQ API running on http://localhost:${PORT}`);
-  console.log(`\n   POST /analyze        — Start analysis`);
-  console.log(`   POST /answer         — Answer a question`);
-  console.log(`   GET  /session/:id    — Check session`);
-  console.log(`   GET  /history        — Previous analyses`);
-  console.log(`   POST /feedback       — Submit accuracy feedback`);
-  console.log(`   GET  /health         — Health check\n`);
+  console.log(`\n   POST /analyze           — Start analysis (optional auth)`);
+  console.log(`   POST /answer            — Answer a question`);
+  console.log(`   GET  /session/:id       — Check session`);
+  console.log(`   GET  /history           — Previous analyses 🔒 (JWT required)`);
+  console.log(`   POST /feedback          — Submit accuracy feedback 🔒 (JWT required)`);
+  console.log(`   GET  /api/market/prices — Enriched market data`);
+  console.log(`   GET  /api/market/price/:material — Single material price`);
+  console.log(`   GET  /api/market/cache-stats — Cache statistics`);
+  console.log(`   GET  /health            — Health check\n`);
+  console.log(`   🔑  Auth layer active:`);
+  console.log(`       • JWT verified via Supabase on every protected request`);
+  console.log(`       • x-user-id header IGNORED — identity from token only`);
+  console.log(`       • /history and /feedback → 401 without valid Bearer token`);
   console.log(`   🛡  Protection layer active:`);
   console.log(`       • Session TTL    : 10 minutes`);
   console.log(`       • Rate limit     : 10 req/min per IP`);
   console.log(`       • Sanitization   : strings trimmed + script-stripped`);
-  console.log(`   🔑  Auth layer active:`);
-  console.log(`       • user_id read from x-user-id header or form field`);
-  console.log(`       • DB rows tagged with user_id when present`);
-  console.log(`       • /history filtered by user_id when present`);
   console.log(`   📋  Stability layer active:`);
   console.log(`       • Structured logging via logEvent()`);
   console.log(`       • Standardized errors via errorResponse()`);
-  console.log(`       • Safe fallbacks: AI / DB / pricing\n`);
+  console.log(`       • Safe fallbacks: AI / DB / pricing`);
+  console.log(`   💹 Market data service active:`);
+  console.log(`       • Real-time commodity pricing`);
+  console.log(`       • 5-minute cache with stale detection`);
+  console.log(`       • Intelligent fallback system`);
+  console.log(`   🤖 AI field policy:`);
+  console.log(`       • Material  : auto-detected (mandatory)`);
+  console.log(`       • Condition : AI estimate shown for user confirmation`);
+  console.log(`       • Weight    : ALWAYS requested from user (never auto-filled)\n`);
 });
 
 // ─── Exports (for testing) ───────────────────────────────────────────────────

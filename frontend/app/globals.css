@@ -22,13 +22,20 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
   --radius-full: 999px;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.08);
+  --shadow-xl: 0 24px 48px rgba(0,0,0,0.1);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 body {
   font-family: 'Inter', system-ui, sans-serif;
   background: var(--bg-primary);
@@ -40,6 +47,7 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-full); }
 
+/* ── Shared keyframes ────────────────────────────────────────────────────── */
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideIn { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
@@ -50,3 +58,28 @@ body {
 @keyframes priceReveal { from { opacity: 0; transform: scale(.9); filter: blur(4px); } to { opacity: 1; transform: scale(1); filter: blur(0); } }
 @keyframes stepDone { from { transform: scale(0); } to { transform: scale(1); } }
 @keyframes fadeInScale { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: scale(1); } }
+
+/* ── Intelligence Sphere keyframes ───────────────────────────────────────── */
+@keyframes sphereSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes sphereBreath { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.04); opacity: 0.85; } }
+
+/* ── Dropdown entrance ───────────────────────────────────────────────────── */
+@keyframes dropdownIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Mobile Base ──────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  html { font-size: 15px; }
+
+  /* Prevent horizontal overflow */
+  body { overflow-x: hidden; }
+
+  /* Touch-friendly tap targets */
+  button, a { min-height: 44px; }
+}
+
+@media (max-width: 480px) {
+  html { font-size: 14px; }
+}

@@ -4,6 +4,8 @@
  * ScrapIQ Core Protection Layer
  */
 
+const { logEvent } = require("../utils/logger");
+
 // ─── ENV MODE ─────────────────────────────────────────────
 const IS_DEV = process.env.NODE_ENV !== "production";
 
@@ -55,10 +57,10 @@ function sessionExpiryMiddleware(sessions) {
 
 // ─── 2. RATE LIMITING ───────────────────────────────────
 
-// DEV: 1000 req/min
-// PROD: 10 req/min
+// DEV: 1000 req/min (very permissive for testing)
+// PROD: 10 req/min (configurable via env var RATE_LIMIT_MAX)
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX = IS_DEV ? 1000 : 10;
+const RATE_LIMIT_MAX = IS_DEV ? 1000 : (parseInt(process.env.RATE_LIMIT_MAX || "10", 10) || 10);
 
 const _rateLimitStore = new Map();
 
@@ -79,6 +81,11 @@ function rateLimitMiddleware(req, res, next) {
   timestamps = timestamps.filter((t) => t > windowStart);
 
   if (timestamps.length >= RATE_LIMIT_MAX) {
+    logEvent("RATE_LIMIT_HIT", {
+      ip,
+      route: `${req.method} ${req.path}`,
+      details: { requestsInWindow: timestamps.length, limit: RATE_LIMIT_MAX },
+    });
     return res.status(429).json({
       error: "RATE_LIMIT_EXCEEDED",
       message: "Too many requests",

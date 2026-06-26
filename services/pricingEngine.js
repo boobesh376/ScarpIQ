@@ -28,7 +28,9 @@ const MATERIAL_RATES = {
   aluminum: 150,
   iron: 30,
   steel: 40,
+  brass: 200,     // Added: brass is a valid material with UI option
   plastic: 20,
+  mixed: 25,      // Added: catch-all for mixed/unknown materials (conservative rate)
 };
 
 /**
@@ -44,10 +46,28 @@ const SUBTYPE_FACTORS = {
   iron: {
     heavy: 1.0,
     light: 0.8,
+    cast: 0.9,
+  },
+  aluminum: {
+    pure: 1.0,
+    mixed: 0.85,
+    cans: 0.9,
+  },
+  brass: {
+    pure: 1.0,
+    mixed: 0.8,
+  },
+  steel: {
+    stainless: 1.15,
+    mild: 1.0,
   },
   plastic: {
     hard: 1.0,
     soft: 0.7,
+  },
+  mixed: {
+    mixed_metals: 0.9,    // Multiple metal types
+    mixed_general: 0.8,   // General mixed materials
   },
 };
 
@@ -57,6 +77,16 @@ const SUBTYPE_FACTORS = {
 const CLEANLINESS_FACTOR = {
   clean: 1.0,
   dirty: 0.75,
+};
+
+/**
+ * Rust severity multiplier (iron-specific).
+ * Only applied to iron material with rust severity specified.
+ */
+const RUST_SEVERITY_FACTOR = {
+  minimal_rust: 1.0,
+  moderate_rust: 0.9,
+  severe_rust: 0.7,
 };
 
 /**
@@ -328,40 +358,52 @@ function calculatePrice(input) {
   // 4. Resolve cleanliness factor
   const cleanlinessFactor = CLEANLINESS_FACTOR[cleanliness];
 
-  // 5. Calculate
-  const effectiveRate = round(baseRate * subtypeFactor * cleanlinessFactor);
+  // 5. Resolve rust severity factor (iron-specific, optional)
+  const rustSeverity = categoryData.rustSeverity
+    ? categoryData.rustSeverity.toLowerCase()
+    : null;
+  const rustSeverityFactor =
+    material === "iron" && rustSeverity && rustSeverity in RUST_SEVERITY_FACTOR
+      ? RUST_SEVERITY_FACTOR[rustSeverity]
+      : 1.0;
+
+  // 6. Calculate
+  const effectiveRate = round(
+    baseRate * subtypeFactor * cleanlinessFactor * rustSeverityFactor
+  );
   const basePrice = round(weight * baseRate);
   const finalPrice = round(weight * effectiveRate * conditionFactor);
 
-  // 6. Price range (±10%)
+  // 7. Price range (±10%)
   const priceRange = {
     min: round(finalPrice * 0.9),
     max: round(finalPrice * 1.1),
   };
 
-  // 7. Negotiation insights
+  // 8. Negotiation insights
   const negotiation = {
     dealerOffer: round(finalPrice * 0.85),
     targetPrice: finalPrice,
     minAcceptable: round(finalPrice * 0.8),
   };
 
-  // 8. Build breakdown
+  // 9. Build breakdown
   const breakdown = {
     baseRate,
     weight,
     subtypeFactor,
     cleanlinessFactor,
+    rustSeverityFactor,
     effectiveRate,
     conditionFactor,
   };
 
-  // 9. Legacy structured explanation (backward-compatible)
+  // 10. Legacy structured explanation (backward-compatible)
   const explanation = generateExplanation(material, condition, subtype, cleanliness);
 
-  // 10. Phase 11: Rich explainability engine
+  // 11. Phase 11: Rich explainability engine
   const richExplanation = generateRichExplanation(
-    material, condition, subtype, cleanliness,
+    material, condition, subtype, cleanliness, rustSeverity,
     { baseRate, subtypeFactor, cleanlinessFactor, conditionFactor, finalPrice, basePrice }
   );
 
@@ -431,7 +473,7 @@ function generateExplanation(material, condition, subtype, cleanliness) {
  * @param {Object} factors  — numeric factors used in calculation
  * @returns {{ summary: string, positives: string[], negatives: string[], tips: string[] }}
  */
-function generateRichExplanation(material, condition, subtype, cleanliness, factors) {
+function generateRichExplanation(material, condition, subtype, cleanliness, rustSeverity, factors) {
   const { baseRate, subtypeFactor, cleanlinessFactor, conditionFactor, finalPrice, basePrice } = factors;
 
   const positives = [];
@@ -487,6 +529,15 @@ function generateRichExplanation(material, condition, subtype, cleanliness, fact
     negatives.push(`Dirty material incurs a 25% recycling penalty (factor: ×${cleanlinessFactor})`);
   }
 
+  // Rust severity (iron-specific)
+  if (material === "iron" && rustSeverity) {
+    if (rustSeverity === "severe_rust") {
+      negatives.push(`Severe rust reduces iron value by 30% — consider mechanical cleaning first`);
+    } else if (rustSeverity === "moderate_rust") {
+      negatives.push(`Moderate rust reduces iron value by 10% — light cleaning could recover value`);
+    }
+  }
+
   // Unfavorable subtype
   if (subtypeFactor < 1.0) {
     const pct = Math.round((1 - subtypeFactor) * 100);
@@ -507,6 +558,16 @@ function generateRichExplanation(material, condition, subtype, cleanliness, fact
   // Cleanliness tips
   const cleanlinessTips = IMPROVEMENT_TIPS.cleanliness[cleanliness] || [];
   tips.push(...cleanlinessTips);
+
+  // Rust severity tips (iron-specific)
+  if (material === "iron" && rustSeverity) {
+    if (rustSeverity === "severe_rust") {
+      tips.push("Wire brush or sandblast severe rust to recover up to 30% value");
+      tips.push("Separate rusted and unrusted iron for better rates on the clean portion");
+    } else if (rustSeverity === "moderate_rust") {
+      tips.push("Light surface cleaning with wire brush can recover ~10% value");
+    }
+  }
 
   // Subtype tips
   const subtypeTips = IMPROVEMENT_TIPS.subtype[subtype] || [];

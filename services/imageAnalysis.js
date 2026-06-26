@@ -1,229 +1,357 @@
 /**
  * ScrapIQ Image Analysis Service
  * ================================
- * Uses Google Gemini Vision API to extract structured scrap data from images.
+ * Real Gemini Vision AI integration for structured scrap material analysis.
  *
- * Returns ONLY: { material, confidence, condition }
- * Never guesses. Returns "unknown" / "uncertain" when unsure.
+ * Returns a RICH structured result:
+ *   { material, category, condition, cleanliness, estimatedWeightKg,
+ *     confidence, confidenceScore, reasoning[], source?, error? }
+ *
+ * Backward-compatible contract:
+ *   - `confidence` is always 0-1 (for coreEngine threshold checks)
+ *   - `confidenceScore` is 0-100 (for UI display)
+ *   - `material` and `condition` remain normalised as before
  *
  * NON-THROWING: analyzeImage NEVER throws. It always returns a valid object.
- * MOCK MODE: Set MOCK_IMAGE=true in .env to bypass Gemini entirely.
+ * MOCK MODE: Set MOCK_IMAGE=true in .env to bypass Gemini (dev/test only).
+ *
+ * FALLBACK SAFETY:
+ *   - Timeout / quota / API error => returns fallback error object
+ *   - Malformed JSON => cleaned and re-parsed; falls back on parse failure
+ *   - Empty buffer => returns INVALID_IMAGE error immediately
+ *   - No API key => returns NO_API_KEY error immediately
  */
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+"use strict";
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { mapConfidenceScore, scoreToFloat } = require("./confidenceMapper");
+
+// --- Constants ----------------------------------------------------------------
 
 const USE_MOCK = process.env.MOCK_IMAGE === "true";
 
-const VALID_MATERIALS = ["copper", "iron", "aluminum", "steel", "plastic", "unknown"];
-const VALID_CONDITIONS = ["good", "used", "damaged", "uncertain"];
+const GEMINI_MODEL   = "gemini-2.5-flash";
+const TIMEOUT_MS     = 25000; // 25 seconds
 
-const GEMINI_MODEL = "gemini-1.5-flash";
+const VALID_MATERIALS     = ["copper", "iron", "aluminum", "steel", "plastic", "unknown"];
+const VALID_CONDITIONS    = ["good", "used", "damaged", "uncertain"];
+const VALID_CATEGORIES    = ["metal", "plastic", "electronics", "unknown"];
+const VALID_CLEANLINESSES = ["clean", "moderate", "dirty"];
 
-/**
- * The prompt sent to Gemini. Strict — demands JSON only, no guessing.
- */
-const ANALYSIS_PROMPT = `Analyze this image of a scrap item.
+// --- Gemini Prompt ------------------------------------------------------------
 
-Return ONLY JSON in this format:
+const ANALYSIS_PROMPT = `You are a scrap metal and recycling expert. Analyze this image and identify the scrap material.
 
+Return ONLY a valid JSON object - no preamble, no explanation, no markdown code fences. Just raw JSON.
+
+Required format:
 {
   "material": "copper | iron | aluminum | steel | plastic | unknown",
-  "confidence": number (0 to 1),
-  "condition": "good | used | damaged | uncertain"
+  "category": "metal | plastic | electronics | unknown",
+  "condition": "good | used | damaged | uncertain",
+  "cleanliness": "clean | moderate | dirty",
+  "estimatedWeightKg": <number or null>,
+  "confidence": <integer 0 to 100>,
+  "reasoning": [
+    "<specific visual observation 1>",
+    "<specific visual observation 2>",
+    "<specific visual observation 3>"
+  ]
 }
 
-Rules:
-- Do NOT guess if unsure → return "unknown" for material, "uncertain" for condition
-- confidence must reflect how sure you are (0 = no idea, 1 = certain)
-- Do NOT include explanation
-- Do NOT include extra text
-- Return ONLY the JSON object, nothing else`;
+Field rules - follow exactly:
+- material: The dominant recyclable material. Use "unknown" if you cannot identify it with reasonable certainty.
+- category: "metal" for copper/iron/aluminum/steel. "plastic" for plastic. "electronics" for circuit boards or electronic devices. "unknown" if unclear.
+- condition: "good" = clean minimal wear. "used" = visible wear/use marks. "damaged" = rust cracks major deformation. "uncertain" = cannot determine.
+- cleanliness: "clean" = no coatings or contamination. "moderate" = some oil light dirt minor contamination. "dirty" = heavy contamination paint mixed materials heavy rust.
+- estimatedWeightKg: Use apparent size and material density to estimate. Must be a positive number (e.g. 1.5) or null if impossible to estimate.
+- confidence: How certain are you? 90-100 = visually certain. 70-89 = reasonably confident. 50-69 = possible but uncertain. Below 50 = guessing.
+- reasoning: 2 to 4 specific visual observations that led to your identification. Be specific. Example: "Reddish-orange metallic sheen consistent with copper".
 
-// ─── Gemini Client ───────────────────────────────────────────────────────────
+Critical rules:
+- Return ONLY the JSON object. No other text whatsoever.
+- Do NOT wrap in markdown code fences.
+- Do NOT add comments inside the JSON.
+- Use "unknown" and low confidence when genuinely unsure - do not guess.`;
 
-/**
- * Create a Gemini GenerativeModel instance.
- *
- * @param {string} [apiKey] - Gemini API key. Falls back to GEMINI_API_KEY env var.
- * @returns {GenerativeModel}
- * @throws {Error} If no API key is available.
- */
+// --- Mock Response ------------------------------------------------------------
+
+const MOCK_RESPONSE = {
+  material:          "copper",
+  category:          "metal",
+  condition:         "used",
+  cleanliness:       "moderate",
+  estimatedWeightKg: 1.5,
+  confidence:        0.9,
+  confidenceScore:   90,
+  reasoning: [
+    "Reddish-orange coloration consistent with copper",
+    "Visible wire strand texture",
+    "Moderate surface oxidation present",
+  ],
+  source: "mock",
+};
+
+// --- Fallback Response --------------------------------------------------------
+
+function buildErrorResponse(errorCode) {
+  return {
+    material:          null,
+    category:          null,
+    condition:         null,
+    cleanliness:       null,
+    estimatedWeightKg: null,
+    confidence:        0,
+    confidenceScore:   0,
+    reasoning:         [],
+    error:             errorCode,
+  };
+}
+
+// --- Gemini Client ------------------------------------------------------------
+
 function createModel(apiKey) {
   const key = apiKey || process.env.GEMINI_API_KEY;
   if (!key) {
-    throw new Error(
-      "imageAnalysis: GEMINI_API_KEY is required. Set it in .env or pass it directly."
-    );
+    throw new Error("imageAnalysis: GEMINI_API_KEY is required. Set it in .env");
   }
   const genAI = new GoogleGenerativeAI(key);
   return genAI.getGenerativeModel({ model: GEMINI_MODEL });
 }
 
-// ─── Response Parsing ────────────────────────────────────────────────────────
+// --- Response Parsing ---------------------------------------------------------
 
-/**
- * Parse and validate Gemini's raw text response into structured data.
- *
- * @param {string} rawText - Raw text from Gemini API.
- * @returns {{material: string, confidence: number, condition: string}}
- * @throws {Error} If response is not valid JSON or has invalid fields.
- */
-function parseGeminiResponse(rawText) {
-  if (!rawText || typeof rawText !== "string") {
-    throw new Error("imageAnalysis: empty response from Gemini");
+function stripFences(raw) {
+  // Defensive: ensure input is a string
+  if (typeof raw !== "string") {
+    return "";
   }
-
-  // Strip markdown code fences if Gemini wraps response in ```json ... ```
-  let cleaned = rawText.trim();
+  
+  let cleaned = raw.trim();
+  
+  // Remove markdown code fences (```json, ```, etc.)
   if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+    // Strip opening fence (supports ```json, ```, etc.)
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").trim();
+    // Strip closing fence if present
+    cleaned = cleaned.replace(/```\s*$/m, "").trim();
+  }
+  
+  // Safety: truncate at the last closing brace to handle trailing text
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (lastBrace !== -1) {
+    cleaned = cleaned.slice(0, lastBrace + 1);
+  }
+  
+  return cleaned;
+}
+
+function parseGeminiResponse(rawText) {
+  // Defensive: ensure input is valid
+  if (!rawText || typeof rawText !== "string" || rawText.trim().length === 0) {
+    throw new Error("imageAnalysis: empty or invalid response from Gemini");
   }
 
-  // Parse JSON
+  const cleaned = stripFences(rawText);
+  
+  // Defensive: ensure cleaned result is not empty
+  if (!cleaned || cleaned.trim().length === 0) {
+    throw new Error("imageAnalysis: response is empty after stripping fences");
+  }
+  
   let parsed;
   try {
     parsed = JSON.parse(cleaned);
-  } catch (e) {
-    throw new Error(`imageAnalysis: invalid JSON from Gemini: ${cleaned.slice(0, 200)}`);
+  } catch (parseErr) {
+    // Provide more helpful error message for debugging
+    const preview = cleaned.slice(0, 150);
+    throw new Error("imageAnalysis: invalid JSON from Gemini: " + preview);
   }
 
-  if (!parsed || typeof parsed !== "object") {
+  // Defensive: verify parsed result is an object (not array or primitive)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("imageAnalysis: Gemini response is not a JSON object");
   }
 
-  // ── Validate & normalize material ──────────────────────────────────────
-  let material = parsed.material;
-  if (typeof material !== "string" || !material.trim()) {
-    material = "unknown";
-  } else {
-    material = material.toLowerCase().trim();
-    // Normalize aliases
-    if (material === "aluminium") material = "aluminum";
-    if (!VALID_MATERIALS.includes(material)) material = "unknown";
+  // --- material ---
+  let material = typeof parsed.material === "string" && parsed.material.trim().length > 0
+    ? parsed.material.toLowerCase().trim()
+    : "unknown";
+  if (material === "aluminium") material = "aluminum";
+  if (!VALID_MATERIALS.includes(material)) material = "unknown";
+
+  // --- category ---
+  let category = typeof parsed.category === "string" && parsed.category.trim().length > 0
+    ? parsed.category.toLowerCase().trim()
+    : "unknown";
+  if (!VALID_CATEGORIES.includes(category)) category = "unknown";
+
+  // --- condition ---
+  let condition = typeof parsed.condition === "string" && parsed.condition.trim().length > 0
+    ? parsed.condition.toLowerCase().trim()
+    : "uncertain";
+  const conditionAliases = {
+    rusted: "damaged", broken: "damaged", corroded: "damaged",
+    cracked: "damaged", bent: "damaged", dented: "damaged",
+    working: "good", clean: "good", intact: "good",
+    new: "good", worn: "used", old: "used",
+  };
+  condition = conditionAliases[condition] ?? condition;
+  if (!VALID_CONDITIONS.includes(condition)) condition = "uncertain";
+
+  // --- cleanliness ---
+  let cleanliness = typeof parsed.cleanliness === "string" && parsed.cleanliness.trim().length > 0
+    ? parsed.cleanliness.toLowerCase().trim()
+    : "moderate";
+  if (!VALID_CLEANLINESSES.includes(cleanliness)) cleanliness = "moderate";
+
+  // --- estimatedWeightKg ---
+  let estimatedWeightKg = null;
+  if (
+    typeof parsed.estimatedWeightKg === "number" &&
+    Number.isFinite(parsed.estimatedWeightKg) &&
+    parsed.estimatedWeightKg > 0
+  ) {
+    estimatedWeightKg = Math.min(Math.round(parsed.estimatedWeightKg * 100) / 100, 500);
   }
 
-  // ── Validate & normalize confidence ────────────────────────────────────
+  // --- confidence (0-1 scale, clamped to valid range) ---
   let confidence = parsed.confidence;
   if (typeof confidence !== "number" || !Number.isFinite(confidence)) {
     confidence = 0;
   }
-  // Clamp to [0, 1]
+  // Clamp confidence to [0, 1] range
   confidence = Math.max(0, Math.min(1, confidence));
-  // Round to 2 decimals
-  confidence = Math.round(confidence * 100) / 100;
+  
+  // For UI: convert to 0-100 scale
+  const confidenceScore = Math.round(confidence * 100);
 
-  // ── Validate & normalize condition ─────────────────────────────────────
-  let condition = parsed.condition;
-  if (typeof condition !== "string" || !condition.trim()) {
-    condition = "uncertain";
-  } else {
-    condition = condition.toLowerCase().trim();
-    // Map common aliases
-    if (condition === "rusted" || condition === "broken" || condition === "corroded") {
-      condition = "damaged";
-    }
-    if (condition === "working" || condition === "new" || condition === "clean") {
-      condition = "good";
-    }
-    if (!VALID_CONDITIONS.includes(condition)) condition = "uncertain";
+  // --- reasoning ---
+  let reasoning = [];
+  if (Array.isArray(parsed.reasoning)) {
+    reasoning = parsed.reasoning
+      .filter(r => typeof r === "string" && r.trim().length > 0)
+      .map(r => r.trim())
+      .slice(0, 5);
+  }
+  if (reasoning.length === 0 && material !== "unknown") {
+    reasoning = [material.charAt(0).toUpperCase() + material.slice(1) + " identified based on visual characteristics"];
   }
 
-  return { material, confidence, condition };
+  return {
+    material,
+    category,
+    condition,
+    cleanliness,
+    estimatedWeightKg,
+    confidence,
+    confidenceScore,
+    reasoning,
+  };
 }
 
-// ─── Main Function ───────────────────────────────────────────────────────────
+// --- Timeout Wrapper ----------------------------------------------------------
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Gemini call timed out after " + ms + "ms")), ms)
+    ),
+  ]);
+}
+
+// --- Main analyzeImage Function -----------------------------------------------
 
 /**
- * Analyze an image using Gemini Vision API.
+ * Analyze a scrap image using Gemini Vision API.
  *
- * NON-THROWING: This function NEVER throws. It always returns a valid object.
+ * NON-THROWING. Returns a safe error object on any failure.
  *
- * @param {Buffer} imageBuffer - The image file as a Buffer.
- * @param {Object} [options]
- * @param {string} [options.mimeType="image/jpeg"] - MIME type of the image.
- * @param {string} [options.apiKey] - Gemini API key (overrides env).
- * @param {GenerativeModel} [options.model] - Pre-built model (for testing/DI).
- * @returns {Promise<{material: string|null, confidence: number, condition: string|null, error?: string, source?: string}>}
+ * @param {Buffer}  imageBuffer
+ * @param {Object}  [options]
+ * @param {string}  [options.mimeType]  - MIME type (default: "image/jpeg")
+ * @param {string}  [options.apiKey]   - Override GEMINI_API_KEY
+ * @param {Object}  [options.model]    - Pre-built model (for DI/testing)
+ * @returns {Promise<Object>}
  */
 async function analyzeImage(imageBuffer, options = {}) {
-  // ── MOCK MODE (DEV SAFE MODE) ─────────────────────────────
+  // --- MOCK MODE ---
   if (USE_MOCK) {
-    console.log("⚠️ Using MOCK image analysis");
-
-    return {
-      material: "copper",
-      condition: "damaged",
-      confidence: 0.9,
-      source: "mock"
-    };
+    console.log("WARNING: imageAnalysis: MOCK_IMAGE=true - using mock response (not real AI)");
+    return { ...MOCK_RESPONSE };
   }
 
-  // ── Validate input ────────────────────────────────────────
+  // --- Input validation ---
   if (!imageBuffer || !Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
-    return {
-      material: null,
-      condition: null,
-      confidence: 0,
-      error: "INVALID_IMAGE"
-    };
+    console.error("imageAnalysis: received empty or non-Buffer image");
+    return buildErrorResponse("INVALID_IMAGE");
   }
 
   const mimeType = options.mimeType || "image/jpeg";
 
-  // ── Build model (NO THROW) ────────────────────────────────
+  // --- Build model ---
   let model;
   try {
     model = options.model || createModel(options.apiKey);
   } catch (err) {
-    console.error("⚠️ Gemini init failed:", err.message);
-
-    return {
-      material: null,
-      condition: null,
-      confidence: 0,
-      error: "NO_API_KEY"
-    };
+    console.error("imageAnalysis: Gemini init failed:", err.message);
+    return buildErrorResponse("NO_API_KEY");
   }
 
-  // ── Prepare image part ────────────────────────────────────
+  // --- Prepare image part ---
   const imagePart = {
     inlineData: {
-      data: imageBuffer.toString("base64"),
+      data:     imageBuffer.toString("base64"),
       mimeType,
     },
   };
 
-  // ── Call Gemini + Parse (NO THROW) ────────────────────────
+  // --- Call Gemini with timeout ---
   try {
-    const result = await model.generateContent([ANALYSIS_PROMPT, imagePart]);
+    const geminiCall = model.generateContent([ANALYSIS_PROMPT, imagePart]);
+    const result     = await withTimeout(geminiCall, TIMEOUT_MS);
+    const rawText    = result.response.text();
 
-    const response = result.response;
-    const rawText = response.text();
+    if (!rawText || !rawText.trim()) {
+      console.error("imageAnalysis: Gemini returned empty text");
+      return buildErrorResponse("EMPTY_RESPONSE");
+    }
 
-    return parseGeminiResponse(rawText);
+    const parsed = parseGeminiResponse(rawText);
+
+    console.log(
+      "imageAnalysis: " + parsed.material + " detected" +
+      " (confidence: " + parsed.confidenceScore + "%, cleanliness: " + parsed.cleanliness + ")"
+    );
+
+    return parsed;
+
   } catch (err) {
-    console.error("⚠️ Gemini call failed:", err.message);
+    const errMsg = err.message || "Unknown error";
+    let errorCode = "IMAGE_ANALYSIS_FAILED";
 
-    return {
-      material: null,
-      condition: null,
-      confidence: 0,
-      error: "IMAGE_ANALYSIS_FAILED"
-    };
+    if (errMsg.includes("timed out"))          errorCode = "TIMEOUT";
+    else if (errMsg.includes("quota"))         errorCode = "QUOTA_EXCEEDED";
+    else if (errMsg.includes("invalid JSON"))  errorCode = "PARSE_ERROR";
+    else if (errMsg.includes("API_KEY"))       errorCode = "INVALID_API_KEY";
+
+    console.error("imageAnalysis: [" + errorCode + "] " + errMsg);
+    return buildErrorResponse(errorCode);
   }
 }
 
-// ─── Exports ─────────────────────────────────────────────────────────────────
+// --- Exports -----------------------------------------------------------------
 
 module.exports = {
   analyzeImage,
   parseGeminiResponse,
   createModel,
-  // Constants exported for testing
   VALID_MATERIALS,
   VALID_CONDITIONS,
+  VALID_CATEGORIES,
+  VALID_CLEANLINESSES,
   ANALYSIS_PROMPT,
   GEMINI_MODEL,
 };

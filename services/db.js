@@ -185,10 +185,79 @@ async function insertFeedback({ analysis_id, is_accurate, note, user_id }) {
   }
 }
 
+// ─── deleteAnalysis ───────────────────────────────────────────────────────────
+
+/**
+ * Soft-delete an analysis row by ID.
+ * Only deletes if the row belongs to the given userId (ownership check).
+ *
+ * @param {string} analysisId - UUID of the analysis to delete.
+ * @param {string} userId     - Supabase user UUID (ownership guard).
+ * @returns {Promise<boolean>} true on success, false if not found/not owned.
+ */
+async function deleteAnalysis(analysisId, userId) {
+  const client = getClient();
+  if (!client) return false;
+
+  try {
+    const { error, count } = await client
+      .from("analyses")
+      .delete({ count: "exact" })
+      .eq("id", analysisId)
+      .eq("user_id", userId);
+
+    if (error) {
+      console.error("[db] deleteAnalysis error:", error.message);
+      return false;
+    }
+
+    return (count ?? 0) > 0;
+  } catch (err) {
+    console.error("[db] deleteAnalysis threw:", err.message);
+    return false;
+  }
+}
+
+// ─── togglePinAnalysis ────────────────────────────────────────────────────────
+
+/**
+ * Toggle the is_pinned flag on an analysis row.
+ * Requires: ALTER TABLE analyses ADD COLUMN IF NOT EXISTS is_pinned boolean DEFAULT false;
+ *
+ * @param {string}  analysisId - UUID of the analysis.
+ * @param {string}  userId     - Supabase user UUID (ownership guard).
+ * @param {boolean} isPinned   - Desired pin state.
+ * @returns {Promise<boolean>} true on success.
+ */
+async function togglePinAnalysis(analysisId, userId, isPinned) {
+  const client = getClient();
+  if (!client) return false;
+
+  try {
+    const { error } = await client
+      .from("analyses")
+      .update({ is_pinned: Boolean(isPinned) })
+      .eq("id", analysisId)
+      .eq("user_id", userId);
+
+    if (error) {
+      console.error("[db] togglePinAnalysis error:", error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error("[db] togglePinAnalysis threw:", err.message);
+    return false;
+  }
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
   insertAnalysis,
   fetchAnalyses,
   insertFeedback,
+  deleteAnalysis,
+  togglePinAnalysis,
 };

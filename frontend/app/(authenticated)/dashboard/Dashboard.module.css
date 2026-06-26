@@ -1,0 +1,104 @@
+/* ── Dashboard.module.css ─────────────────────────────────────────────────
+   ScrapIQ AI Intelligence Command Center — Phase 3
+   Color-zoned. Alive. Premium. No white card soup.
+──────────────────────────────────────────────────────────────────────────── */
+
+.canvas {
+  background: #F0F7F3;
+  border-radius: 24px;
+  margin: -24px -24px 0;
+  padding: 28px 24px 80px;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: #0F172A;
+  min-height: calc(100vh - 72px);
+}
+
+@media (max-width: 767px) {
+  .canvas {
+    margin: -16px -12px 0;
+    padding: 18px 14px 64px;
+    border-radius: 0;
+  }
+}
+
+/* ── Reveal stagger ──────────────────────────────────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(22px);
+  animation: dReveal 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.delay1 { animation-delay: 0.04s; }
+.delay2 { animation-delay: 0.12s; }
+.delay3 { animation-delay: 0.20s; }
+.delay4 { animation-delay: 0.28s; }
+.delay5 { animation-delay: 0.36s; }
+.delay6 { animation-delay: 0.44s; }
+.delay7 { animation-delay: 0.52s; }
+
+@keyframes dReveal {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Metric card hover ───────────────────────────────────────────────────── */
+.metricCard {
+  border-radius: 20px;
+  padding: 22px;
+  cursor: default;
+  transition: transform 0.22s cubic-bezier(0.16,1,0.3,1),
+              box-shadow 0.22s ease,
+              border-color 0.22s ease;
+}
+.metricCard:hover {
+  transform: translateY(-4px);
+}
+
+/* ── Feed item ───────────────────────────────────────────────────────────── */
+.feedItem {
+  background: #FFFFFF;
+  border-radius: 18px;
+  padding: 18px 20px;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.feedItem:hover {
+  transform: translateY(-2px);
+}
+
+/* ── Action card ─────────────────────────────────────────────────────────── */
+.actionCard {
+  display: block;
+  text-decoration: none;
+  border-radius: 20px;
+  padding: 24px;
+  transition: transform 0.22s cubic-bezier(0.16,1,0.3,1),
+              box-shadow 0.22s ease,
+              border-color 0.22s ease,
+              background 0.22s ease;
+}
+.actionCard:hover {
+  transform: translateY(-5px);
+}
+
+/* ── Impact tile ─────────────────────────────────────────────────────────── */
+.impactTile {
+  border-radius: 18px;
+  padding: 22px 16px;
+  text-align: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.impactTile:hover {
+  transform: translateY(-3px);
+}
+
+/* ── Timeline item hover ─────────────────────────────────────────────────── */
+.timelineRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 15px 10px;
+  border-radius: 12px;
+  transition: background 0.15s ease;
+}
+.timelineRow:hover {
+  background: rgba(16, 185, 129, 0.05);
+}

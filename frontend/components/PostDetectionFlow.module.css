@@ -1,0 +1,911 @@
+/* ============================================================
+   PostDetectionFlow — Modern Progressive Questioning UI
+   ============================================================ */
+
+/* ── Container ─────────────────────────────────────────────── */
+.flowContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  animation: fadeInUp 0.35s var(--ease) both;
+}
+
+/* ── AI Detection Card ──────────────────────────────────────– */
+.detectionCard {
+  background: linear-gradient(135deg, rgba(91, 99, 255, 0.08), rgba(54, 214, 182, 0.06));
+  border: 1px solid rgba(91, 99, 255, 0.25);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  backdrop-filter: blur(10px);
+}
+
+.detectionContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detectionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detectionLabel {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.confidencePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-full);
+  background: rgba(91, 99, 255, 0.12);
+  border: 1px solid rgba(91, 99, 255, 0.3);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.confidenceScore {
+  font-weight: 700;
+  color: var(--accent);
+  margin-left: 4px;
+}
+
+.detectionInfo {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.infoChip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.85rem;
+}
+
+.infoLabel {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.infoValue {
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+/* ── Progress Indicator ────────────────────────────────────– */
+.progressBar {
+  height: 3px;
+  background: var(--border-subtle);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--success));
+  border-radius: var(--radius-full);
+  transition: width 0.4s var(--ease);
+}
+
+.progressText {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ── Question Card ─────────────────────────────────────────– */
+.questionCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  animation: cardPop 0.4s var(--ease-bounce) both;
+}
+
+.questionText {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+  line-height: 1.4;
+}
+
+/* ── Answered History ───────────────────────────────────────– */
+.answeredHistory {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding: 12px;
+  background: rgba(54, 214, 182, 0.04);
+  border: 1px solid rgba(54, 214, 182, 0.15);
+  border-radius: var(--radius-md);
+}
+
+.answeredItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.answeredCheck {
+  color: var(--success);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.answeredLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+.answeredValue {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* ── Question Content ───────────────────────────────────────– */
+.questionContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Chip Grid ─────────────────────────────────────────────– */
+.chipGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+/* ── Condition Chips ───────────────────────────────────────– */
+.conditionGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.conditionChip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s var(--ease);
+}
+
+.conditionChip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(91, 99, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.conditionChip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Material Chips ────────────────────────────────────────– */
+.materialChip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 0.15s var(--ease);
+}
+
+.materialChip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(91, 99, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.materialChip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Subtype Chips ─────────────────────────────────────────– */
+.subtypeChip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s var(--ease);
+  min-height: 100px;
+  justify-content: flex-start;
+}
+
+.subtypeChip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(91, 99, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.subtypeChip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Option Chips ──────────────────────────────────────────– */
+.optionChip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s var(--ease);
+  min-height: 90px;
+  justify-content: flex-start;
+}
+
+.optionChip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(91, 99, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.optionChip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Shared Chip Styles ────────────────────────────────────– */
+.chip {
+  /* Base chip styling for any button */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s var(--ease);
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(91, 99, 255, 0.06);
+}
+
+.chipSelected {
+  border-color: var(--accent) !important;
+  background: rgba(91, 99, 255, 0.15) !important;
+  color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(91, 99, 255, 0.1), inset 0 0 0 1px var(--accent);
+}
+
+.chipEmoji {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.chipMaterialIcon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.chipIcon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.chipLabel {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.chipDesc {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.3;
+}
+
+/* ── Weight Input ──────────────────────────────────────────– */
+.weightPrompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  text-align: center;
+  background: rgba(91, 99, 255, 0.04);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.weightIcon {
+  font-size: 2.5rem;
+}
+
+.weightText {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.chipButton {
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.22s var(--ease-bounce);
+  font-family: inherit;
+}
+
+.chipButton:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: 0 8px 20px rgba(91, 99, 255, 0.35);
+  transform: translateY(-2px);
+}
+
+.chipButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.weightInputWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.weightInputField {
+  padding: 16px;
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: inherit;
+  text-align: center;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.weightInputField:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.weightInputField::placeholder {
+  color: var(--text-muted);
+}
+
+.weightHint {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.submitWeightBtn {
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.22s var(--ease-bounce);
+  font-family: inherit;
+}
+
+.submitWeightBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: 0 8px 20px rgba(91, 99, 255, 0.35);
+  transform: translateY(-2px);
+}
+
+.submitWeightBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Text Input ────────────────────────────────────────────– */
+.textInputWrap {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.textInput {
+  flex: 1;
+  padding: 12px 14px;
+  font-size: 0.93rem;
+  font-family: inherit;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.textInput:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.textInput::placeholder {
+  color: var(--text-muted);
+}
+
+.submitBtn {
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.22s var(--ease-bounce);
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.submitBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: 0 8px 20px rgba(91, 99, 255, 0.35);
+  transform: translateY(-2px);
+}
+
+.submitBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Error Message ─────────────────────────────────────────– */
+.errorMsg {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 90, 101, 0.08);
+  color: var(--error);
+  border: 1px solid rgba(255, 90, 101, 0.2);
+  font-size: 0.85rem;
+  animation: slideDown 0.2s var(--ease) both;
+}
+
+/* ── Animations ────────────────────────────────────────────– */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cardPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* ── Responsive ────────────────────────────────────────────– */
+@media (max-width: 767px) {
+  .questionCard { padding: 16px; }
+  .questionText { font-size: 1rem; margin-bottom: 16px; }
+
+  /* Chips: 2 columns on mobile */
+  .chipGrid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .conditionGrid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  /* Detection card */
+  .detectionCard { padding: 14px; }
+  .detectionInfo { flex-direction: column; gap: 8px; }
+  .infoChip { width: 100%; }
+
+  /* Weight input */
+  .weightInputField { font-size: 1.3rem; padding: 12px; }
+  .weightPrompt { padding: 16px; }
+
+  /* Text input row: stack on narrow */
+  .textInputWrap { flex-direction: column; }
+  .submitBtn { width: 100%; padding: 12px; }
+
+  /* Answered history: tighter */
+  .answeredHistory { padding: 10px; gap: 6px; }
+  .answeredItem { font-size: 0.8rem; gap: 8px; }
+
+  /* AI hints */
+  .aiWeightHint { font-size: 0.78rem; }
+  .aiConditionHint { font-size: 0.78rem; }
+}
+
+@media (max-width: 480px) {
+  .questionCard { padding: 12px; }
+  .detectionCard { padding: 12px; }
+
+  /* Single column chips on very narrow */
+  .chipGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .conditionGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .optionChip { min-height: 75px; padding: 10px; }
+  .subtypeChip { min-height: 75px; padding: 10px; }
+
+  .chipLabel { font-size: 0.8rem; }
+  .chipDesc  { font-size: 0.65rem; }
+
+  .confidencePill { font-size: 0.72rem; padding: 6px 10px; gap: 5px; }
+  .questionText { font-size: 0.95rem; }
+}
+
+/* ── AI Hint Banners ───────────────────────────────────────── */
+
+/* Info chip variants for detection card */
+.infoTag {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(54, 214, 182, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(54, 214, 182, 0.3);
+  flex-shrink: 0;
+}
+
+.infoChipEditable {
+  border-color: rgba(251, 191, 36, 0.3) !important;
+  background: rgba(251, 191, 36, 0.06) !important;
+}
+
+.infoTagEditable {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(251, 191, 36, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.infoChipHint {
+  border-color: rgba(156, 163, 175, 0.25) !important;
+  background: rgba(156, 163, 175, 0.06) !important;
+  opacity: 0.8;
+}
+
+.infoTagHint {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(156, 163, 175, 0.12);
+  color: var(--text-muted);
+  border: 1px solid rgba(156, 163, 175, 0.2);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* AI weight hint shown in weight question */
+.aiWeightHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(156, 163, 175, 0.08);
+  border: 1px solid rgba(156, 163, 175, 0.2);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  width: 100%;
+}
+
+.aiWeightHintIcon {
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.aiWeightHintText {
+  line-height: 1.4;
+}
+
+.aiWeightHintText strong {
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+/* AI condition hint shown above condition chips */
+.aiConditionHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(251, 191, 36, 0.06);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.aiConditionHintIcon {
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.aiConditionHintText {
+  line-height: 1.4;
+}
+
+.aiConditionHintText strong {
+  color: #f59e0b;
+  font-weight: 700;
+}
+
+/* AI-suggested condition chip highlight */
+.chipAiSuggested {
+  border-color: rgba(251, 191, 36, 0.4) !important;
+  background: rgba(251, 191, 36, 0.06) !important;
+}
+
+.aiSuggestedTag {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 0.6rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(251, 191, 36, 0.2);
+  color: #f59e0b;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+/* Make conditionChip position:relative for absolute AI tag */
+.conditionChip {
+  position: relative;
+}
+
+/* ============================================================
+   PREMIUM REFINEMENT — AI Memory Timeline + Milestone Progress
+   ============================================================ */
+
+.memoryPanel {
+  background: linear-gradient(165deg, #F8F4FF 0%, #FFFFFF 100%);
+  border: 1.5px solid rgba(167,139,250,0.22);
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.memoryPanelTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: .76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #6D28D9;
+  margin-bottom: 14px;
+}
+.memoryEmpty {
+  font-size: .8rem;
+  color: #94A3B8;
+  font-style: italic;
+  padding: 8px 0;
+}
+.memoryList { display: flex; flex-direction: column; }
+.memoryNode {
+  display: flex;
+  gap: 10px;
+  opacity: 0;
+  transform: translateY(6px);
+  animation: memNodeIn .4s cubic-bezier(0.16,1,0.3,1) forwards;
+}
+.memoryNodeDotCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 18px;
+  flex-shrink: 0;
+}
+.memoryNodeDot {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #10B981;
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .58rem; font-weight: 800;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(16,185,129,0.16);
+}
+.memoryNodeLine {
+  width: 2px; flex: 1; min-height: 14px;
+  background: linear-gradient(180deg, rgba(167,139,250,0.5), rgba(167,139,250,0.12));
+}
+.memoryNodeBody { padding-bottom: 12px; flex: 1; min-width: 0; }
+.memoryNodeLabel {
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #94A3B8;
+  margin-bottom: 1px;
+}
+.memoryNodeValue { font-size: .87rem; font-weight: 700; color: #0F172A; }
+.memoryConfBar {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(167,139,250,0.16);
+}
+.memoryConfLabel {
+  display: flex;
+  justify-content: space-between;
+  font-size: .72rem;
+  font-weight: 700;
+  color: #64748B;
+  margin-bottom: 6px;
+}
+.memoryConfValue { color: #6D28D9; font-weight: 800; }
+.memoryConfTrack {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(167,139,250,0.12);
+  overflow: hidden;
+}
+.memoryConfFill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #A78BFA, #6D28D9);
+  transition: width .7s cubic-bezier(0.16,1,0.3,1);
+}
+
+/* Milestone progress (replaces flat progressBar) */
+.milestoneTrack {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 0 2px;
+}
+.milestoneLine {
+  position: absolute;
+  top: 9px; left: 9px; right: 9px;
+  height: 3px;
+  background: #E2E8F0;
+  border-radius: 999px;
+  z-index: 0;
+}
+.milestoneLineFill {
+  position: absolute;
+  top: 9px; left: 9px;
+  height: 3px;
+  background: linear-gradient(90deg, #10B981, #6EE7B7);
+  border-radius: 999px;
+  z-index: 1;
+  transition: width .5s cubic-bezier(0.16,1,0.3,1);
+}
+.milestoneNode {
+  position: relative;
+  z-index: 2;
+  width: 19px; height: 19px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2.5px solid #E2E8F0;
+  transition: all .35s cubic-bezier(0.34,1.56,0.64,1);
+}
+.milestoneNodeDone {
+  border-color: #10B981;
+  background: #10B981;
+  box-shadow: 0 0 0 4px rgba(16,185,129,0.16);
+}
+.milestoneNodeActive {
+  border-color: #6D28D9;
+  animation: memNodePulseActive 1.3s ease-in-out infinite;
+}
+
+/* Premium hover/select polish layered onto existing chip classes */
+.premiumChip {
+  transition: transform .22s cubic-bezier(0.34,1.56,0.64,1), box-shadow .22s ease, border-color .22s ease;
+}
+.premiumChip:hover:not(:disabled) { transform: translateY(-2px) scale(1.015); box-shadow: 0 10px 22px rgba(16,185,129,0.16); }
+.premiumChipSelected { animation: memSelectPulse .45s ease; }
+
+@keyframes memNodeIn { to { opacity: 1; transform: translateY(0); } }
+@keyframes memNodePulseActive { 0%,100% { box-shadow: 0 0 0 0 rgba(109,40,217,0.3); } 50% { box-shadow: 0 0 0 6px rgba(109,40,217,0.12); } }
+@keyframes memSelectPulse { 0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.35); } 100% { box-shadow: 0 0 0 10px rgba(16,185,129,0); } }
