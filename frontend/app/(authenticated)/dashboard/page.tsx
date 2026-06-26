@@ -510,19 +510,22 @@ function ScrapIntelligenceEngine() {
           { top: 14, right: 14, rotate: 90  },
           { bottom: 14, right: 14, rotate: 180 },
           { bottom: 14, left: 14,  rotate: 270 },
-        ].map((pos, i) => (
-          <svg key={i} width="18" height="18" viewBox="0 0 18 18" fill="none"
-            style={{
-              position: "absolute",
-              ...pos,
-              transform: `rotate(${pos.rotate}deg)`,
-              opacity: isScanning ? 1 : 0.4,
-              transition: "opacity 0.4s ease",
-            }}
-          >
-            <path d="M1 10 L1 1 L10 1" stroke={item.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.8"/>
-          </svg>
-        ))}
+        ].map((pos, i) => {
+          const { rotate, ...stylePosition } = pos;
+          return (
+            <svg key={i} width="18" height="18" viewBox="0 0 18 18" fill="none"
+              style={{
+                position: "absolute",
+                ...stylePosition,
+                transform: `rotate(${rotate}deg)`,
+                opacity: isScanning ? 1 : 0.4,
+                transition: "opacity 0.4s ease",
+              }}
+            >
+              <path d="M1 10 L1 1 L10 1" stroke={item.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.8"/>
+            </svg>
+          );
+        })}
 
         {/* ── Scrap object silhouette ── */}
         <div style={{

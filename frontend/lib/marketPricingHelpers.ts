@@ -32,7 +32,7 @@ export function formatPrice(price: number | undefined | null): string {
 export function formatChange(
   changePercent: number | undefined | null
 ): { text: string; color: string } {
-  const safePercent = !Number.isFinite(changePercent) ? 0 : changePercent;
+  const safePercent = typeof changePercent === "number" && Number.isFinite(changePercent) ? changePercent : 0;
   const sign = safePercent > 0 ? "+" : "";
   return {
     text: `${sign}${safePercent.toFixed(2)}%`,
@@ -157,7 +157,7 @@ export function sortByPrice(
 export function generateMarketInsights(
   materials: Record<string, EnrichedMaterial>
 ): string[] {
-  const insights = [];
+  const insights: string[] = [];
 
   // Find extreme movements
   const entries = Object.entries(materials);
